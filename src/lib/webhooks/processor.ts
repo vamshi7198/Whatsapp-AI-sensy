@@ -1,0 +1,504 @@
+import { createHash } from "node:crypto";
+
+import type { MessageStatus, Prisma } from "@prisma/client";
+
+import { prisma } from "../db";
+import { maskPhone, moduleLogger } from "../logger";
+import { getOptOutKeywords } from "../settings";
+import type { NormalisedWebhookEvent } from "../whatsapp/types";
+
+const log = moduleLogger("webhook-processor");
+
+/**
+ * Applies normalised webhook events to the database.
+ *
+ * Two properties this code must guarantee, because Meta provides neither:
+ *
+ *  1. Idempotency. Meta retries on any slow or non-2xx response, so the same
+ *     event arrives more than once. Handled by a unique dedupeKey plus status
+ *     transitions that are safe to repeat.
+ *
+ *  2. Order independence. Meta can deliver `read` before `delivered`. Statuses
+ *     therefore only ever advance, so any arrival order converges on the same
+ *     final state without locking.
+ */
+
+/** Higher wins. FAILED is terminal and never downgraded. */
+const STATUS_RANK: Record<MessageStatus, number> = {
+  QUEUED: 0,
+  SENT: 1,
+  DELIVERED: 2,
+  READ: 3,
+  FAILED: 4,
+};
+
+const SERVICE_WINDOW_MS = 24 * 60 * 60 * 1000;
+
+/** Stable key for an event, so a replay is stored and applied once. */
+export function buildDedupeKey(event: NormalisedWebhookEvent): string {
+  const parts =
+    event.kind === "status_update"
+      ? ["status", event.externalMessageId, event.status, String(event.timestamp.getTime())]
+      : event.kind === "inbound_message"
+        ? ["inbound", event.externalMessageId]
+        : event.kind === "template_status"
+          ? ["template", event.templateName, event.language, event.status]
+          : event.kind === "quality_update"
+            ? ["quality", event.phoneNumber, event.qualityRating ?? "", event.messagingTier ?? ""]
+            : ["unknown", JSON.stringify(event.raw).slice(0, 500)];
+
+  return createHash("sha256").update(parts.join("|")).digest("hex");
+}
+
+export interface ProcessResult {
+  processed: number;
+  duplicates: number;
+  failed: number;
+}
+
+/**
+ * Stores each event and applies it.
+ *
+ * The unique constraint on dedupeKey is what makes this safe to call twice
+ * with the same payload — the second call sees zero new rows and does nothing.
+ */
+export async function processWebhookEvents(
+  events: NormalisedWebhookEvent[],
+  signatureValid: boolean,
+): Promise<ProcessResult> {
+  const result: ProcessResult = { processed: 0, duplicates: 0, failed: 0 };
+
+  for (const event of events) {
+    const dedupeKey = buildDedupeKey(event);
+
+    const created = await prisma.webhookEvent.createMany({
+      data: [
+        {
+          dedupeKey,
+          eventType: event.kind,
+          wamid:
+            "externalMessageId" in event ? event.externalMessageId : null,
+          payload: event.raw as Prisma.InputJsonValue,
+          signatureValid,
+        },
+      ],
+      skipDuplicates: true,
+    });
+
+    if (created.count === 0) {
+      result.duplicates += 1;
+      continue;
+    }
+
+    try {
+      await applyEvent(event);
+
+      await prisma.webhookEvent.update({
+        where: { dedupeKey },
+        data: { status: "PROCESSED", processedAt: new Date() },
+      });
+      result.processed += 1;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      log.error({ kind: event.kind, err: message }, "Failed to apply event");
+
+      await prisma.webhookEvent
+        .update({
+          where: { dedupeKey },
+          data: { status: "FAILED", error: message },
+        })
+        .catch(() => undefined);
+
+      result.failed += 1;
+    }
+  }
+
+  return result;
+}
+
+async function applyEvent(event: NormalisedWebhookEvent): Promise<void> {
+  switch (event.kind) {
+    case "inbound_message":
+      return applyInboundMessage(event);
+    case "status_update":
+      return applyStatusUpdate(event);
+    case "template_status":
+      return applyTemplateStatus(event);
+    case "quality_update":
+      return applyQualityUpdate(event);
+    default:
+      log.debug({ kind: event.kind }, "Ignoring unrecognised event");
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/* Inbound messages                                                    */
+/* ------------------------------------------------------------------ */
+
+async function applyInboundMessage(
+  event: Extract<NormalisedWebhookEvent, { kind: "inbound_message" }>,
+): Promise<void> {
+  // A message from an unknown number creates the contact. They are NOT marked
+  // opted in — messaging us is not consent to receive marketing.
+  const contact = await prisma.contact.upsert({
+    where: { phoneE164: event.from },
+    update: {
+      lastInboundAt: event.timestamp,
+      whatsappStatus: "VALID",
+      deletedAt: null,
+      // Only fill a blank name; never overwrite a curated one with a
+      // WhatsApp profile name.
+      ...(event.contactName ? {} : {}),
+    },
+    create: {
+      phoneE164: event.from,
+      name: event.contactName,
+      source: "inbound",
+      whatsappStatus: "VALID",
+      lastInboundAt: event.timestamp,
+    },
+  });
+
+  if (!contact.name && event.contactName) {
+    await prisma.contact.update({
+      where: { id: contact.id },
+      data: { name: event.contactName },
+    });
+  }
+
+  const windowExpiry = new Date(event.timestamp.getTime() + SERVICE_WINDOW_MS);
+
+  const conversation = await prisma.conversation.upsert({
+    where: { contactId: contact.id },
+    update: {
+      status: "OPEN",
+      lastMessageAt: event.timestamp,
+      lastInboundAt: event.timestamp,
+      serviceWindowExpiresAt: windowExpiry,
+      unreadCount: { increment: 1 },
+    },
+    create: {
+      contactId: contact.id,
+      status: "OPEN",
+      lastMessageAt: event.timestamp,
+      lastInboundAt: event.timestamp,
+      serviceWindowExpiresAt: windowExpiry,
+      unreadCount: 1,
+    },
+  });
+
+  await prisma.message.createMany({
+    data: [
+      {
+        wamid: event.externalMessageId,
+        direction: "INBOUND",
+        contactId: contact.id,
+        conversationId: conversation.id,
+        type: event.type,
+        body: event.text,
+        payload: event.raw as Prisma.InputJsonValue,
+        // Inbound messages are received, not delivered by us. DELIVERED is the
+        // closest honest state and keeps the status column meaningful.
+        status: "DELIVERED",
+        deliveredAt: event.timestamp,
+        createdAt: event.timestamp,
+      },
+    ],
+    skipDuplicates: true,
+  });
+
+  await handleOptOutKeyword(event, contact.id);
+  await recordCampaignReply(contact.id, event.timestamp);
+
+  log.info(
+    { from: maskPhone(event.from), type: event.type },
+    "Inbound message stored",
+  );
+}
+
+/**
+ * Honours STOP / UNSUBSCRIBE / REMOVE immediately.
+ *
+ * Matching is on the whole trimmed message, not a substring: "please don't
+ * stop sending offers" must not opt someone out.
+ */
+async function handleOptOutKeyword(
+  event: Extract<NormalisedWebhookEvent, { kind: "inbound_message" }>,
+  contactId: string,
+): Promise<void> {
+  if (!event.text) return;
+
+  const keywords = await getOptOutKeywords();
+  const normalised = event.text.trim().toUpperCase().replace(/[.!]+$/, "");
+
+  if (!keywords.includes(normalised)) return;
+
+  // The flag and the audit trail are written together: the flag is what the
+  // send query reads, the trail is what proves the request if challenged.
+  await prisma.$transaction([
+    prisma.contact.update({
+      where: { id: contactId },
+      data: {
+        marketingOptOut: true,
+        marketingOptOutAt: event.timestamp,
+        optInStatus: "OPTED_OUT",
+      },
+    }),
+    prisma.optOut.create({
+      data: {
+        contactId,
+        phoneE164: event.from,
+        scope: "MARKETING",
+        keyword: normalised,
+        reason: "Customer replied with an opt-out keyword",
+        sourceMessageId: event.externalMessageId,
+        createdAt: event.timestamp,
+      },
+    }),
+  ]);
+
+  log.info(
+    { contactId, keyword: normalised },
+    "Contact opted out of marketing",
+  );
+}
+
+/** Counts a reply against a campaign the contact recently received. */
+async function recordCampaignReply(
+  contactId: string,
+  at: Date,
+): Promise<void> {
+  const sevenDaysAgo = new Date(at.getTime() - 7 * 24 * 60 * 60 * 1000);
+
+  const recipient = await prisma.campaignRecipient.findFirst({
+    where: {
+      contactId,
+      repliedAt: null,
+      status: { in: ["SENT", "DELIVERED", "READ"] },
+      createdAt: { gte: sevenDaysAgo },
+    },
+    orderBy: { createdAt: "desc" },
+    select: { id: true, campaignId: true },
+  });
+
+  if (!recipient) return;
+
+  // repliedAt is set once, so later messages in the same conversation do not
+  // keep inflating the campaign's reply count.
+  await prisma.$transaction([
+    prisma.campaignRecipient.update({
+      where: { id: recipient.id },
+      data: { repliedAt: at },
+    }),
+    prisma.campaign.update({
+      where: { id: recipient.campaignId },
+      data: { repliedCount: { increment: 1 } },
+    }),
+  ]);
+}
+
+/* ------------------------------------------------------------------ */
+/* Delivery status                                                     */
+/* ------------------------------------------------------------------ */
+
+const STATUS_MAP: Record<string, MessageStatus> = {
+  sent: "SENT",
+  delivered: "DELIVERED",
+  read: "READ",
+  failed: "FAILED",
+};
+
+async function applyStatusUpdate(
+  event: Extract<NormalisedWebhookEvent, { kind: "status_update" }>,
+): Promise<void> {
+  const next = STATUS_MAP[event.status];
+  if (!next) return;
+
+  const message = await prisma.message.findUnique({
+    where: { wamid: event.externalMessageId },
+    select: {
+      id: true,
+      status: true,
+      contactId: true,
+      campaignRecipientId: true,
+    },
+  });
+
+  if (!message) {
+    // Meta can deliver a status before our own send transaction commits. The
+    // event is stored, so it stays visible in Logs rather than vanishing.
+    log.warn(
+      { wamid: event.externalMessageId, status: event.status },
+      "Status update for an unknown message",
+    );
+    return;
+  }
+
+  // Monotonic: never regress READ back to DELIVERED on an out-of-order replay.
+  if (STATUS_RANK[next] <= STATUS_RANK[message.status]) {
+    log.debug(
+      { wamid: event.externalMessageId, from: message.status, to: next },
+      "Ignoring out-of-order status",
+    );
+    return;
+  }
+
+  await prisma.message.update({
+    where: { id: message.id },
+    data: {
+      status: next,
+      ...(next === "SENT" ? { sentAt: event.timestamp } : {}),
+      ...(next === "DELIVERED" ? { deliveredAt: event.timestamp } : {}),
+      ...(next === "READ" ? { readAt: event.timestamp } : {}),
+      ...(next === "FAILED"
+        ? {
+            failedAt: event.timestamp,
+            errorCode: event.error?.code,
+            errorDetail: event.error?.technicalDetail,
+            errorUserMessage: event.error?.userMessage,
+          }
+        : {}),
+      ...(event.pricingCategory
+        ? { pricingCategory: event.pricingCategory }
+        : {}),
+      ...(event.billable !== undefined ? { billable: event.billable } : {}),
+    },
+  });
+
+  // A permanent recipient failure is real evidence the number is unusable.
+  if (next === "FAILED" && event.error?.code === "131026") {
+    await prisma.contact.update({
+      where: { id: message.contactId },
+      data: { whatsappStatus: "INVALID" },
+    });
+  }
+
+  if (next !== "FAILED") {
+    await prisma.contact.update({
+      where: { id: message.contactId },
+      data: { whatsappStatus: "VALID" },
+    });
+  }
+
+  if (message.campaignRecipientId) {
+    await updateCampaignCounters(message.campaignRecipientId, next, event.timestamp);
+  }
+}
+
+/**
+ * Advances the recipient's status and increments the campaign's counters.
+ *
+ * Counters are denormalised so the dashboard never aggregates over millions of
+ * message rows, and each is incremented exactly once because the caller only
+ * reaches here on a genuine forward transition.
+ */
+async function updateCampaignCounters(
+  recipientId: string,
+  status: MessageStatus,
+  at: Date,
+): Promise<void> {
+  const recipient = await prisma.campaignRecipient.findUnique({
+    where: { id: recipientId },
+    select: { id: true, campaignId: true, status: true },
+  });
+
+  if (!recipient) return;
+
+  const RECIPIENT_RANK: Record<string, number> = {
+    PENDING: 0,
+    QUEUED: 1,
+    SENT: 2,
+    DELIVERED: 3,
+    READ: 4,
+    FAILED: 5,
+    SKIPPED: 5,
+  };
+
+  if (RECIPIENT_RANK[status] <= RECIPIENT_RANK[recipient.status]) return;
+
+  const counter =
+    status === "SENT"
+      ? "sentCount"
+      : status === "DELIVERED"
+        ? "deliveredCount"
+        : status === "READ"
+          ? "readCount"
+          : status === "FAILED"
+            ? "failedCount"
+            : null;
+
+  await prisma.$transaction([
+    prisma.campaignRecipient.update({
+      where: { id: recipientId },
+      data: { status: status as never, updatedAt: at },
+    }),
+    ...(counter
+      ? [
+          prisma.campaign.update({
+            where: { id: recipient.campaignId },
+            data: { [counter]: { increment: 1 } },
+          }),
+        ]
+      : []),
+  ]);
+}
+
+/* ------------------------------------------------------------------ */
+/* Template and account status                                         */
+/* ------------------------------------------------------------------ */
+
+async function applyTemplateStatus(
+  event: Extract<NormalisedWebhookEvent, { kind: "template_status" }>,
+): Promise<void> {
+  if (!event.templateName) return;
+
+  const updated = await prisma.template.updateMany({
+    where: {
+      name: event.templateName,
+      ...(event.language ? { language: event.language } : {}),
+    },
+    data: {
+      status: event.status,
+      rejectedReason: event.reason,
+      lastSyncedAt: new Date(),
+    },
+  });
+
+  log.info(
+    { template: event.templateName, status: event.status, updated: updated.count },
+    "Template status updated",
+  );
+}
+
+async function applyQualityUpdate(
+  event: Extract<NormalisedWebhookEvent, { kind: "quality_update" }>,
+): Promise<void> {
+  const writes = [];
+
+  if (event.qualityRating) {
+    writes.push(
+      prisma.appSetting.upsert({
+        where: { key: "meta.quality_rating" },
+        update: { value: event.qualityRating },
+        create: { key: "meta.quality_rating", value: event.qualityRating },
+      }),
+    );
+  }
+
+  if (event.messagingTier) {
+    writes.push(
+      prisma.appSetting.upsert({
+        where: { key: "meta.messaging_tier" },
+        update: { value: event.messagingTier },
+        create: { key: "meta.messaging_tier", value: event.messagingTier },
+      }),
+    );
+  }
+
+  if (writes.length) await prisma.$transaction(writes);
+
+  log.warn(
+    { quality: event.qualityRating, tier: event.messagingTier },
+    "WhatsApp account quality changed",
+  );
+}

@@ -357,6 +357,10 @@ model CampaignRecipient {
   status              RecipientStatus @default(PENDING)
   skipReason          String?
   attemptCount        Int             @default(0)
+  /// Set once, the first time this person replies after receiving the
+  /// campaign. Without it, every subsequent inbound message would inflate the
+  /// campaign's reply count.
+  repliedAt           DateTime?
   /// Set when a send timed out after the request was written and we cannot
   /// know whether Meta accepted it. Never auto-retried.
   needsReconciliation Boolean         @default(false)
