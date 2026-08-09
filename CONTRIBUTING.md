@@ -38,10 +38,13 @@ npm run db:seed
 npm run dev
 ```
 
-Leave the WhatsApp settings empty. **Develop against a disconnected app** — it
-runs perfectly well without Meta credentials and simply says WhatsApp is not
-connected. You do not need real credentials to build features, and you should
-not have them.
+**Leave the WhatsApp settings empty on your own machine.** The app runs
+perfectly well disconnected — it says so and disables sending. Almost every
+feature can be built and tested that way, and a local copy connected to the
+live WhatsApp account can send real messages to real customers by accident.
+
+Connect WhatsApp locally only when you are specifically working on sending,
+and when you do, keep the audience to your own number.
 
 ---
 
@@ -142,12 +145,114 @@ would have been sent into the wrong placeholders.
 
 ## Deploying
 
-Do not deploy. Ask Vamshi.
+The app runs on a machine in the office, reachable at
+`https://whatsapp.uncanned.in` through a Cloudflare Tunnel.
 
-For context: the app runs on a machine in the office and updates with
-`deploy/update.ps1`, which builds and restarts together. Running `npm run
-build` on its own while the app is live replaces the build underneath a running
-process and breaks it.
+**One command, run as Administrator on that machine:**
+
+```powershell
+cd C:\dev\uncanned-whatsapp
+git pull
+powershell -ExecutionPolicy Bypass -File deploy\update.ps1
+```
+
+It verifies, stops the app, builds, restarts, and checks that both localhost
+and the public address answer. If the build fails it restarts the previous
+version rather than leaving the app down.
+
+**Never run `npm run build` on its own while the app is live.** Next.js loads
+its build at startup and keeps referring to those files; replacing them under a
+running process makes pages return 500 and can strip the styling entirely, with
+nothing in the logs to explain it. This has already happened once. Build and
+restart belong together, which is what `update.ps1` enforces.
+
+### If a migration is involved
+
+```powershell
+npm run db:deploy      # applies migrations
+```
+
+Run it before `update.ps1`. Back up first — see below.
+
+### After deploying
+
+Check `https://whatsapp.uncanned.in/settings/logs`. The first line says when
+WhatsApp last contacted the app. If that timestamp stops moving, incoming
+messages are not arriving.
+
+---
+
+## Running it day to day
+
+You own this. These are the things that keep it working.
+
+### Back up the database
+
+Nobody else is doing it.
+
+```powershell
+powershell -File deploy\backup.ps1
+```
+
+Schedule it daily in Task Scheduler, and copy the folder somewhere off that
+machine occasionally. **A backup that has never been restored is not a
+backup** — test one now and then.
+
+### The machine must stay awake
+
+Messages only arrive while it is on and online. If it sleeps or loses power,
+incoming customer messages stop; Meta retries for a while, so short outages
+recover, but long ones lose messages.
+
+### When something is wrong
+
+| Symptom | Where to look |
+|---|---|
+| Nothing arriving in the Inbox | `settings/logs` — when did WhatsApp last make contact? Then `Get-Service cloudflared` |
+| Site not loading at all | `Get-ScheduledTask -TaskName UncannedWhatsApp`, then `Get-Service cloudflared` |
+| Messages failing to send | `settings/logs` → the failure reason is in plain English; codes are under "View technical details" |
+| Campaign stuck at "Sending" | Check the token has not been revoked: `npx tsx scripts/check-token.ts` |
+| Page renders with no styling | The build was replaced under the running app. Run `update.ps1` |
+
+### Useful checks
+
+```bash
+npx tsx scripts/check-token.ts       # does the access token still work, and does it expire
+npx tsx scripts/account-health.ts    # quality rating, daily limit, display name status
+npx tsx scripts/meta-spend.ts 30     # what Meta will actually bill
+npx tsx scripts/test-roles.ts        # every page as every role
+```
+
+### Watch the quality rating
+
+`account-health.ts` reports it, and the dashboard warns when it is not GREEN.
+It falls when people block or report messages, and a sustained drop reduces how
+many customers can be messaged per day. It is the single best indicator of
+whether the messaging is well judged.
+
+---
+
+## Credentials you will hold
+
+- **GitHub** — full access to this repository
+- **The office machine** — Administrator, for deploys
+- **Meta Business** — WhatsApp Manager, templates, phone number settings
+- **Cloudflare** — the tunnel serving `whatsapp.uncanned.in`
+- **The app** — an Administrator account
+
+Two files on that machine matter more than the rest:
+
+**`.env`** holds every secret. It is git-ignored. Never commit it, never paste
+its contents anywhere, never put it in a ticket or a chat.
+
+**`APP_ENCRYPTION_KEY`** inside `.env` decrypts the stored Meta access token.
+If it is lost, the token must be entered again. **Back it up separately from
+the database backup** — losing both together makes the backup's token
+unrecoverable.
+
+If a secret is ever exposed — committed, pasted, screenshotted — say so
+immediately. Rotating a token takes two minutes; a quietly leaked one can be
+used to message every customer Uncanned has.
 
 ---
 
@@ -162,9 +267,43 @@ process and breaks it.
 
 ---
 
+## Before sending anything to real customers
+
+Every time, without exception:
+
+1. Build the campaign with an audience of **one contact — yourself**
+2. Send it, and check it arrives on your own phone
+3. Confirm the report shows delivered, then read
+4. Only then build the real campaign
+
+The confirmation screen tells you how many people will receive it and how many
+were skipped, with reasons. **Read that screen properly.** It is the last point
+at which a mistake is still free.
+
+---
+
+## Your first week
+
+A reasonable order:
+
+1. Get it running locally, disconnected from WhatsApp
+2. Read `src/lib/campaigns/audience.ts` — the compliance gate is the heart of
+   the system
+3. Read `src/lib/webhooks/processor.ts` — idempotency and out-of-order events
+4. Run the integration scripts and watch what they check
+5. Make a small change, run `npm run verify`, deploy it, watch it go live
+
+Then the open work: a pricing settings page, scheduled campaigns, WhatsApp
+Flows, and a REST API so other Uncanned systems can trigger campaigns. There is
+a plan for each in `docs/`.
+
+---
+
 ## If you are unsure
 
-Ask. Particularly about anything that sends a message, changes who receives
-one, or touches credentials.
+Ask Vamshi. Particularly about anything that sends a message, changes who
+receives one, or touches credentials.
 
-"I was not sure so I did not touch it" is always a fine answer here.
+"I was not sure so I did not touch it" is always a fine answer here. Nobody
+minds a question; everybody minds five hundred people getting the wrong
+message.
