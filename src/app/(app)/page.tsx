@@ -1,5 +1,6 @@
 import { requireAuth } from "@/lib/auth/guards";
 import { prisma } from "@/lib/db";
+import { getSetting, isMetaConnected, SETTING_KEYS } from "@/lib/settings";
 import { formatNumber, formatPercent } from "@/lib/utils";
 
 export const metadata = { title: "Dashboard · Uncanned WhatsApp" };
@@ -34,8 +35,17 @@ export default async function DashboardPage() {
 
   // Counters are read from denormalised columns and simple counts, so the
   // dashboard never aggregates over the full message table on page load.
-  const [contacts, sent, delivered, read, failed, replies, campaigns] =
-    await Promise.all([
+  const [
+    contacts,
+    sent,
+    delivered,
+    read,
+    failed,
+    replies,
+    campaigns,
+    connected,
+    quality,
+  ] = await Promise.all([
       prisma.contact.count({ where: { deletedAt: null } }),
       prisma.message.count({ where: { direction: "OUTBOUND" } }),
       prisma.message.count({
@@ -61,6 +71,8 @@ export default async function DashboardPage() {
           failedCount: true,
         },
       }),
+      isMetaConnected(),
+      getSetting(SETTING_KEYS.QUALITY_RATING),
     ]);
 
   return (
@@ -74,17 +86,37 @@ export default async function DashboardPage() {
         </p>
       </div>
 
-      {/* Setup notice — the app runs before Meta is connected, and says so
-          plainly rather than showing empty charts with no explanation. */}
-      <div className="rounded-xl border border-amber-200 bg-amber-50 p-4 dark:border-amber-900 dark:bg-amber-950">
-        <p className="text-sm font-medium text-amber-900 dark:text-amber-200">
-          WhatsApp is not connected yet
-        </p>
-        <p className="mt-1 text-sm text-amber-800 dark:text-amber-300">
-          Add your WhatsApp Business details in Settings to load templates and
-          start sending campaigns.
-        </p>
-      </div>
+      {/* Shown only when it is actually true. Until now this was hardcoded,
+          so it claimed WhatsApp was disconnected even after it was set up. */}
+      {!connected && (
+        <div className="rounded-xl border border-amber-200 bg-amber-50 p-4 dark:border-amber-900 dark:bg-amber-950">
+          <p className="text-sm font-medium text-amber-900 dark:text-amber-200">
+            WhatsApp is not connected yet
+          </p>
+          <p className="mt-1 text-sm text-amber-800 dark:text-amber-300">
+            Add your WhatsApp Business details in Settings to load templates and
+            start sending campaigns.
+          </p>
+        </div>
+      )}
+
+      {/* A falling quality rating is the earliest warning that sending
+          behaviour needs to change, so it belongs on the first screen. */}
+      {connected && quality && quality.toUpperCase() !== "GREEN" && (
+        <div className="rounded-xl border border-amber-200 bg-amber-50 p-4 dark:border-amber-900 dark:bg-amber-950">
+          <p className="text-sm font-medium text-amber-900 dark:text-amber-200">
+            {quality.toUpperCase() === "RED"
+              ? "WhatsApp has flagged your number"
+              : "Your WhatsApp quality rating has dropped"}
+          </p>
+          <p className="mt-1 text-sm text-amber-800 dark:text-amber-300">
+            This happens when people block or report your messages. Send fewer
+            marketing messages, only to contacts who expect them, and it
+            usually recovers within a few days. If it stays low, WhatsApp can
+            reduce how many people you may message each day.
+          </p>
+        </div>
+      )}
 
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
         <StatCard label="Contacts" value={formatNumber(contacts)} />
