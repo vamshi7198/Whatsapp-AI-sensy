@@ -12,6 +12,7 @@ import {
   listTags,
 } from "@/lib/contacts/service";
 import { can } from "@/lib/rbac";
+import { getDefaultOptIn } from "@/lib/settings";
 import { formatNumber } from "@/lib/utils";
 
 import { ContactFilters } from "./_components/contact-filters";
@@ -42,11 +43,12 @@ export default async function ContactsPage({
     page: params.page,
   });
 
-  const [result, tags, sources, counts] = await Promise.all([
+  const [result, tags, sources, counts, defaultOptIn] = await Promise.all([
     listContacts(filter),
     listTags(),
     listContactSources(),
     getContactCounts(),
+    getDefaultOptIn(),
   ]);
 
   const isFiltered = Boolean(
@@ -86,7 +88,9 @@ export default async function ContactsPage({
               <Button variant="secondary">Import CSV</Button>
             </Link>
           )}
-          {can(user, "contact:create") && <NewContactButton tags={tags} />}
+          {can(user, "contact:create") && (
+            <NewContactButton tags={tags} defaultOptIn={defaultOptIn} />
+          )}
         </div>
       </div>
 

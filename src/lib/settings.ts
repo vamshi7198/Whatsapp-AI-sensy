@@ -27,7 +27,14 @@ export const SETTING_KEYS = {
   WEBHOOK_FORWARD_URL: "webhook.forward_url",
   WEBHOOK_FORWARD_ENABLED: "webhook.forward_enabled",
   OPT_OUT_KEYWORDS: "compliance.opt_out_keywords",
+  /** Pre-ticks the consent box when adding or importing contacts. */
   DEFAULT_OPT_IN: "compliance.default_opt_in",
+  /**
+   * Whether someone who messages the business is treated as consenting to
+   * marketing. Separate from DEFAULT_OPT_IN because it is a materially
+   * different claim: an enquiry is not agreement to receive campaigns.
+   */
+  INBOUND_OPT_IN: "compliance.inbound_opt_in",
   SEND_RATE_MPS: "campaign.send_rate_mps",
   LARGE_THRESHOLD: "campaign.large_threshold",
   DEFAULT_TIMEZONE: "campaign.default_timezone",
@@ -168,6 +175,16 @@ export async function isMetaConnected(): Promise<boolean> {
     present.has(SETTING_KEYS.PHONE_NUMBER_ID) &&
     present.has(SETTING_KEYS.ACCESS_TOKEN)
   );
+}
+
+/** Whether the consent box starts ticked on the add and import screens. */
+export async function getDefaultOptIn(): Promise<boolean> {
+  return (await getSetting(SETTING_KEYS.DEFAULT_OPT_IN)) === "true";
+}
+
+/** Whether an inbound message counts as marketing consent. Off by default. */
+export async function getInboundOptIn(): Promise<boolean> {
+  return (await getSetting(SETTING_KEYS.INBOUND_OPT_IN)) === "true";
 }
 
 export async function getOptOutKeywords(): Promise<string[]> {

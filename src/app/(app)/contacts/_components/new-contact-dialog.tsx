@@ -13,7 +13,14 @@ interface TagOption {
   name: string;
 }
 
-export function NewContactButton({ tags }: { tags: TagOption[] }) {
+export function NewContactButton({
+  tags,
+  defaultOptIn = false,
+}: {
+  tags: TagOption[];
+  /** Set in Settings → Consent. Pre-ticks the box; never forces it. */
+  defaultOptIn?: boolean;
+}) {
   const [open, setOpen] = useState(false);
   const [state, setState] = useState<ActionState>({});
   const [isPending, startTransition] = useTransition();
@@ -144,6 +151,7 @@ export function NewContactButton({ tags }: { tags: TagOption[] }) {
             <input
               type="checkbox"
               name="optedIn"
+              defaultChecked={defaultOptIn}
               className="mt-0.5 rounded border-slate-300"
             />
             <span className="text-sm text-slate-700 dark:text-slate-300">

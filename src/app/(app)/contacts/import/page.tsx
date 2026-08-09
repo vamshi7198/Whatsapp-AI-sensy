@@ -1,6 +1,7 @@
 import Link from "next/link";
 
 import { requireAuth } from "@/lib/auth/guards";
+import { getDefaultOptIn } from "@/lib/settings";
 
 import { ImportWizard } from "./_wizard";
 
@@ -8,6 +9,7 @@ export const metadata = { title: "Import contacts" };
 
 export default async function ImportPage() {
   await requireAuth("contact:import");
+  const defaultOptIn = await getDefaultOptIn();
 
   return (
     <div className="mx-auto max-w-3xl space-y-5">
@@ -27,7 +29,7 @@ export default async function ImportPage() {
         </p>
       </div>
 
-      <ImportWizard />
+      <ImportWizard defaultOptIn={defaultOptIn} />
     </div>
   );
 }

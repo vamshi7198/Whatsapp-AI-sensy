@@ -149,6 +149,7 @@ function MappingStep({
   result,
   action,
   pending,
+  defaultOptIn,
 }: {
   preview: PreviewState;
   headers: string[];
@@ -156,6 +157,7 @@ function MappingStep({
   result: ImportState;
   action: (formData: FormData) => void;
   pending: boolean;
+  defaultOptIn: boolean;
 }) {
   return (
     <form
@@ -267,6 +269,7 @@ function MappingStep({
         <input
           type="checkbox"
           name="optedIn"
+          defaultChecked={defaultOptIn}
           className="mt-0.5 rounded border-slate-300"
         />
         <span className="text-sm text-amber-900 dark:text-amber-200">
@@ -370,7 +373,11 @@ function ResultStep({ result }: { result: ImportState }) {
    Wizard
    ---------------------------------------------------------------------- */
 
-export function ImportWizard() {
+export function ImportWizard({
+  defaultOptIn = false,
+}: {
+  defaultOptIn?: boolean;
+}) {
   const [preview, previewAction, previewPending] = useActionState<
     PreviewState,
     FormData
@@ -406,6 +413,7 @@ export function ImportWizard() {
           result={result}
           action={importAction}
           pending={importPending}
+          defaultOptIn={defaultOptIn}
         />
       ) : (
         <UploadStep

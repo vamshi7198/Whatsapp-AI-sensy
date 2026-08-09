@@ -4,7 +4,7 @@ import type { MessageStatus, Prisma } from "@prisma/client";
 
 import { prisma } from "../db";
 import { maskPhone, moduleLogger } from "../logger";
-import { getOptOutKeywords } from "../settings";
+import { getInboundOptIn, getOptOutKeywords } from "../settings";
 import type { NormalisedWebhookEvent } from "../whatsapp/types";
 
 const log = moduleLogger("webhook-processor");
@@ -138,8 +138,11 @@ async function applyEvent(event: NormalisedWebhookEvent): Promise<void> {
 async function applyInboundMessage(
   event: Extract<NormalisedWebhookEvent, { kind: "inbound_message" }>,
 ): Promise<void> {
-  // A message from an unknown number creates the contact. They are NOT marked
-  // opted in — messaging us is not consent to receive marketing.
+  // A message from an unknown number creates the contact. Whether that counts
+  // as marketing consent is a business decision, set in Settings and off by
+  // default: an enquiry is not agreement to receive campaigns.
+  const treatInboundAsConsent = await getInboundOptIn();
+
   const contact = await prisma.contact.upsert({
     where: { phoneE164: event.from },
     update: {
@@ -156,6 +159,15 @@ async function applyInboundMessage(
       source: "inbound",
       whatsappStatus: "VALID",
       lastInboundAt: event.timestamp,
+      ...(treatInboundAsConsent
+        ? {
+            optInStatus: "OPTED_IN",
+            optInAt: event.timestamp,
+            // Recorded precisely, so the basis for consent is auditable
+            // rather than indistinguishable from someone ticking a box.
+            optInSource: "inbound_message_auto",
+          }
+        : {}),
     },
   });
 
