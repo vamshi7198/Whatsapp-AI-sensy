@@ -38,6 +38,11 @@ yarn-error.log*
 /tmp
 /uploads
 
+# campaign images uploaded at runtime — belong on the server, not in git
+/public/media
+/backups
+/logs
+
 # vercel
 .vercel
 
