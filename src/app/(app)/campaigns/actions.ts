@@ -12,11 +12,13 @@ import {
   type AudienceFilter,
   type VariableMapping,
 } from "@/lib/campaigns/audience";
+import { estimateCampaignCost } from "@/lib/campaigns/pricing";
 import {
   cancelCampaign,
   createCampaign,
 } from "@/lib/campaigns/service";
 import { runCampaign } from "@/lib/campaigns/sender";
+import { normalizePhone } from "@/lib/contacts/phone";
 import { prisma } from "@/lib/db";
 import { ForbiddenError } from "@/lib/rbac";
 import { renderTemplateBody, getTemplateBody } from "@/lib/templates/service";
@@ -33,6 +35,12 @@ export interface AudiencePreview {
     missing: string[];
   }>;
   variableProblems?: Array<{ name: string | null; problem: string }>;
+  cost?: {
+    total: number | null;
+    currency: string;
+    perMessage: number | null;
+    usedFallbackRate: boolean;
+  };
 }
 
 const audienceSchema = z.object({
@@ -133,18 +141,182 @@ export async function previewCampaign(
       });
     }
 
+    // Costed on who will actually receive it, not on who matched the
+    // audience — Meta bills for messages sent, not contacts considered.
+    const sendablePhones = resolved.eligible
+      .filter((m) => resolveVariables(m, mapping).missing.length === 0)
+      .map((m) => m.phoneE164);
+
+    const cost = await estimateCampaignCost(sendablePhones, template.category);
+
     return {
       totalMatched: resolved.totalMatched,
       eligible: resolved.eligible.length - missingVariableCount,
       skipped,
       samples,
       variableProblems,
+      cost: {
+        total: cost.totalCost,
+        currency: cost.currency,
+        perMessage: cost.ratePerMessage,
+        usedFallbackRate: cost.usedFallbackRate,
+      },
     };
   } catch (error) {
     if (error instanceof ForbiddenError) {
       return { error: "You do not have permission to create campaigns." };
     }
     return { error: "Could not work out the audience. Please check your choices." };
+  }
+}
+
+export interface ContactSearchResult {
+  id: string;
+  name: string | null;
+  phoneE164: string;
+  optedIn: boolean;
+  tags: string[];
+}
+
+/**
+ * Type-ahead search for the "choose people yourself" audience option.
+ *
+ * Capped at 25 so a broad search cannot pull the whole contact list into the
+ * browser, which is both slow and an unnecessary spread of customer data.
+ */
+export async function searchContactsForCampaign(
+  query: string,
+): Promise<ContactSearchResult[]> {
+  await requireApiAuth("campaign:create");
+
+  const term = query.trim();
+  if (term.length < 2) return [];
+
+  const digits = term.replace(/[^\d]/g, "");
+
+  const contacts = await prisma.contact.findMany({
+    where: {
+      deletedAt: null,
+      OR: [
+        { name: { contains: term, mode: "insensitive" } },
+        { email: { contains: term, mode: "insensitive" } },
+        ...(digits.length >= 3 ? [{ phoneE164: { contains: digits } }] : []),
+      ],
+    },
+    take: 25,
+    orderBy: { name: "asc" },
+    select: {
+      id: true,
+      name: true,
+      phoneE164: true,
+      optInStatus: true,
+      marketingOptOut: true,
+      tags: { select: { tag: { select: { name: true } } } },
+    },
+  });
+
+  return contacts.map((c) => ({
+    id: c.id,
+    name: c.name,
+    phoneE164: c.phoneE164,
+    optedIn: c.optInStatus === "OPTED_IN" && !c.marketingOptOut,
+    tags: c.tags.map((t) => t.tag.name),
+  }));
+}
+
+export interface CsvAudienceResult {
+  error?: string;
+  matched?: number;
+  notFound?: number;
+  invalid?: number;
+  contactIds?: string[];
+  /** First few numbers that matched nothing, so the user can check them. */
+  notFoundSamples?: string[];
+}
+
+/**
+ * Turns an uploaded CSV of phone numbers into a list of existing contacts.
+ *
+ * Deliberately does NOT create contacts. A campaign audience file is not a
+ * consent record, and silently importing new people from it would mean
+ * messaging someone whose opt-in status nobody ever established.
+ */
+export async function resolveCsvAudience(
+  _prev: CsvAudienceResult,
+  formData: FormData,
+): Promise<CsvAudienceResult> {
+  try {
+    await requireApiAuth("campaign:create");
+
+    const file = formData.get("file");
+    if (!(file instanceof File) || file.size === 0) {
+      return { error: "Choose a CSV file." };
+    }
+
+    if (file.size > 5 * 1024 * 1024) {
+      return { error: "That file is too large. Keep it under 5 MB." };
+    }
+
+    const text = await file.text();
+    const lines = text.split(/\r?\n/).filter((l) => l.trim());
+    if (lines.length === 0) return { error: "That file is empty." };
+
+    // Tolerate a header row, and files that are just a column of numbers.
+    const header = lines[0].toLowerCase();
+    const hasHeader = /phone|mobile|number|contact/.test(header);
+    const rows = hasHeader ? lines.slice(1) : lines;
+
+    const phones: string[] = [];
+    let invalid = 0;
+
+    for (const row of rows) {
+      // Take the first cell that looks like a phone number, so a full contact
+      // export works as well as a bare list.
+      const cells = row.split(",").map((c) => c.trim().replace(/^"|"$/g, ""));
+      let found = false;
+
+      for (const cell of cells) {
+        const result = normalizePhone(cell);
+        if (result.ok) {
+          phones.push(result.e164);
+          found = true;
+          break;
+        }
+      }
+
+      if (!found) invalid += 1;
+    }
+
+    if (phones.length === 0) {
+      return {
+        error:
+          "No valid phone numbers were found in that file. Check it has a column of numbers.",
+        invalid,
+      };
+    }
+
+    const unique = [...new Set(phones)];
+
+    const contacts = await prisma.contact.findMany({
+      where: { phoneE164: { in: unique }, deletedAt: null },
+      select: { id: true, phoneE164: true },
+    });
+
+    const foundNumbers = new Set(contacts.map((c) => c.phoneE164));
+    const missing = unique.filter((p) => !foundNumbers.has(p));
+
+    return {
+      matched: contacts.length,
+      notFound: missing.length,
+      invalid,
+      contactIds: contacts.map((c) => c.id),
+      notFoundSamples: missing.slice(0, 5),
+    };
+  } catch (error) {
+    if (error instanceof ForbiddenError) {
+      return { error: "You do not have permission to create campaigns." };
+    }
+    return { error: "Could not read that file. Please try again." };
   }
 }
 

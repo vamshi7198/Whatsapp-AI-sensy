@@ -4,7 +4,10 @@ import { notFound } from "next/navigation";
 import { Badge, OptInBadge } from "@/components/ui/badge";
 import { requireAuth } from "@/lib/auth/guards";
 import { formatPhoneForDisplay } from "@/lib/contacts/phone";
-import { getContact } from "@/lib/contacts/service";
+import { getContact, listTags } from "@/lib/contacts/service";
+import { can } from "@/lib/rbac";
+
+import { EditContactButton } from "./_edit-contact";
 
 export const metadata = { title: "Contact" };
 
@@ -33,10 +36,10 @@ export default async function ContactDetailPage({
 }: {
   params: Promise<{ id: string }>;
 }) {
-  await requireAuth("contact:view");
+  const user = await requireAuth("contact:view");
   const { id } = await params;
 
-  const contact = await getContact(id);
+  const [contact, tags] = await Promise.all([getContact(id), listTags()]);
   if (!contact) notFound();
 
   return (
@@ -48,12 +51,33 @@ export default async function ContactDetailPage({
         >
           ← Back to contacts
         </Link>
-        <h1 className="mt-2 text-2xl font-semibold tracking-tight text-slate-900 dark:text-slate-50">
-          {contact.name || "Unnamed contact"}
-        </h1>
-        <p className="mt-1 font-mono text-sm text-slate-500 dark:text-slate-400">
-          {formatPhoneForDisplay(contact.phoneE164)}
-        </p>
+
+        <div className="mt-2 flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <h1 className="text-2xl font-semibold tracking-tight text-slate-900 dark:text-slate-50">
+              {contact.name || "Unnamed contact"}
+            </h1>
+            <p className="mt-1 font-mono text-sm text-slate-500 dark:text-slate-400">
+              {formatPhoneForDisplay(contact.phoneE164)}
+            </p>
+          </div>
+
+          {can(user, "contact:edit") && (
+            <EditContactButton
+              contact={{
+                id: contact.id,
+                name: contact.name,
+                phoneE164: contact.phoneE164,
+                email: contact.email,
+                notes: contact.notes,
+                optedIn: contact.optInStatus === "OPTED_IN",
+                tagIds: contact.tags.map((t) => t.tag.id),
+              }}
+              tags={tags.map((t) => ({ id: t.id, name: t.name }))}
+              canDelete={can(user, "contact:delete")}
+            />
+          )}
+        </div>
       </div>
 
       <div className="grid gap-5 lg:grid-cols-3">

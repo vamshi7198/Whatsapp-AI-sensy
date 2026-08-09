@@ -12,14 +12,16 @@ import type {
   VariableSource,
 } from "@/lib/campaigns/audience";
 import { formatPhoneForDisplay } from "@/lib/contacts/phone";
-import { formatNumber } from "@/lib/utils";
+import { formatCost, formatNumber } from "@/lib/utils";
 
 import {
   previewCampaign,
   sendCampaign,
   type AudiencePreview,
+  type ContactSearchResult,
   type SendState,
 } from "../actions";
+import { CsvAudiencePicker, ManualContactPicker } from "./_audience-picker";
 
 interface TemplateOption {
   id: string;
@@ -115,6 +117,11 @@ export function CampaignWizard({
   const [sendState, setSendState] = useState<SendState>({});
   const [confirmed, setConfirmed] = useState(false);
   const [isPending, startTransition] = useTransition();
+  // Kept alongside the audience filter so the chosen people stay visible as
+  // chips while the user keeps searching.
+  const [manualContacts, setManualContacts] = useState<ContactSearchResult[]>(
+    [],
+  );
 
   const template = templates.find((t) => t.id === templateId);
   const variableIndexes = template
@@ -150,11 +157,21 @@ export function CampaignWizard({
     });
   }
 
+  // Each audience type needs something actually chosen before continuing,
+  // otherwise the preview step reports "nobody matches" and the user has to
+  // work out why themselves.
+  const audienceReady =
+    audience.type === "ALL_CONTACTS"
+      ? true
+      : audience.type === "TAG" || audience.type === "TAGS"
+        ? (audience.tagIds?.length ?? 0) > 0
+        : (audience.contactIds?.length ?? 0) > 0;
+
   const canContinue =
     step === 1
       ? name.trim().length > 0
       : step === 2
-        ? audience.type !== "TAG" || (audience.tagIds?.length ?? 0) > 0
+        ? audienceReady
         : step === 3
           ? Boolean(templateId)
           : step === 4
@@ -286,6 +303,64 @@ export function CampaignWizard({
                   </Select>
                 </div>
               )}
+
+              <label className="flex items-start gap-2.5 rounded-lg border border-slate-200 p-3 dark:border-slate-700">
+                <input
+                  type="radio"
+                  name="audience"
+                  checked={audience.type === "SELECTED"}
+                  onChange={() =>
+                    setAudience({ type: "SELECTED", contactIds: [] })
+                  }
+                  className="mt-0.5"
+                />
+                <span className="flex-1 text-sm text-slate-700 dark:text-slate-300">
+                  Choose people yourself
+                  <span className="mt-0.5 block text-xs text-slate-500">
+                    Search by name or phone number and pick them one by one.
+                  </span>
+                  {audience.type === "SELECTED" && (
+                    <ManualContactPicker
+                      selected={manualContacts}
+                      onChange={(contacts) => {
+                        setManualContacts(contacts);
+                        setAudience({
+                          type: "SELECTED",
+                          contactIds: contacts.map((c) => c.id),
+                        });
+                      }}
+                    />
+                  )}
+                </span>
+              </label>
+
+              <label className="flex items-start gap-2.5 rounded-lg border border-slate-200 p-3 dark:border-slate-700">
+                <input
+                  type="radio"
+                  name="audience"
+                  checked={audience.type === "CSV_UPLOAD"}
+                  onChange={() =>
+                    setAudience({ type: "CSV_UPLOAD", contactIds: [] })
+                  }
+                  className="mt-0.5"
+                />
+                <span className="flex-1 text-sm text-slate-700 dark:text-slate-300">
+                  Upload a list of numbers
+                  <span className="mt-0.5 block text-xs text-slate-500">
+                    A CSV of phone numbers, matched against your existing
+                    contacts.
+                  </span>
+                  {audience.type === "CSV_UPLOAD" && (
+                    <CsvAudiencePicker
+                      onResolved={(contactIds) => {
+                        // Resolved to contact IDs, so the same compliance and
+                        // variable rules apply as any other audience.
+                        setAudience({ type: "CSV_UPLOAD", contactIds });
+                      }}
+                    />
+                  )}
+                </span>
+              </label>
             </div>
           </div>
         )}
@@ -536,6 +611,13 @@ export function CampaignWizard({
                   "Will receive it",
                   formatNumber(preview.eligible ?? 0),
                 ],
+                [
+                  "Estimated cost",
+                  preview.cost?.total !== null &&
+                  preview.cost?.total !== undefined
+                    ? formatCost(preview.cost.total, preview.cost.currency)
+                    : "No price set",
+                ],
               ].map(([label, value]) => (
                 <div key={label} className="flex justify-between px-3 py-2">
                   <dt className="text-sm text-slate-500 dark:text-slate-400">
@@ -567,6 +649,27 @@ export function CampaignWizard({
                   ))}
                 </ul>
               </div>
+            )}
+
+            {/* Cost is an estimate on purpose: Meta bills on delivery, so
+                messages that fail are never charged. */}
+            {preview.cost?.total !== null &&
+              preview.cost?.total !== undefined && (
+                <p className="text-xs text-slate-500 dark:text-slate-400">
+                  Meta charges when a message is delivered, so failed messages
+                  cost nothing and the final amount may be slightly lower.
+                  {preview.cost.perMessage !== null &&
+                    ` About ${formatCost(preview.cost.perMessage, preview.cost.currency)} per message.`}
+                  {preview.cost.usedFallbackRate &&
+                    " Some numbers used the default rate — set country rates in Settings for a closer estimate."}
+                </p>
+              )}
+
+            {preview.cost?.total === null && (
+              <p className="text-xs text-amber-700 dark:text-amber-400">
+                No message prices are set, so the cost cannot be estimated. An
+                administrator can add them under Settings.
+              </p>
             )}
 
             {(preview.eligible ?? 0) >= 500 && (

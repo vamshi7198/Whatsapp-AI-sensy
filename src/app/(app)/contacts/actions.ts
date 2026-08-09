@@ -130,13 +130,14 @@ export async function updateContact(
       email: formData.get("email") || undefined,
       notes: formData.get("notes") || undefined,
       optedIn: formData.get("optedIn") === "on",
+      tagIds: formData.getAll("tagIds").map(String).filter(Boolean),
     });
 
     if (!parsed.success) {
       return { error: parsed.error.issues[0]?.message ?? "Invalid details" };
     }
 
-    const { id, phone, optedIn, ...rest } = parsed.data;
+    const { id, phone, optedIn, tagIds, ...rest } = parsed.data;
 
     const current = await prisma.contact.findFirst({
       where: { id, deletedAt: null },
@@ -179,6 +180,24 @@ export async function updateContact(
       },
     });
 
+    // Tags are replaced wholesale to match what the form submitted: an
+    // unticked box must actually remove the tag, not silently keep it.
+    if (tagIds !== undefined) {
+      await prisma.$transaction([
+        prisma.contactTag.deleteMany({
+          where: { contactId: id, tagId: { notIn: tagIds } },
+        }),
+        prisma.contactTag.createMany({
+          data: tagIds.map((tagId) => ({
+            contactId: id,
+            tagId,
+            addedById: user.id,
+          })),
+          skipDuplicates: true,
+        }),
+      ]);
+    }
+
     await audit(user, "contact.update", {
       entityType: "Contact",
       entityId: id,
@@ -187,6 +206,42 @@ export async function updateContact(
     revalidatePath("/contacts");
     revalidatePath(`/contacts/${id}`);
     return { success: "Contact updated." };
+  } catch (error) {
+    return toActionState(error);
+  }
+}
+
+/** Soft-deletes a single contact from its detail page. */
+export async function deleteContact(
+  _prev: ActionState,
+  formData: FormData,
+): Promise<ActionState> {
+  try {
+    const user = await requireApiAuth("contact:delete");
+    const id = String(formData.get("id") ?? "");
+
+    const contact = await prisma.contact.findFirst({
+      where: { id, deletedAt: null },
+      select: { id: true, name: true, phoneE164: true },
+    });
+
+    if (!contact) return { error: "That contact no longer exists." };
+
+    // Soft delete: campaign reports must stay accurate afterwards, and a
+    // deleted contact who messages again should rejoin their own history.
+    await prisma.contact.update({
+      where: { id },
+      data: { deletedAt: new Date() },
+    });
+
+    await audit(user, "contact.delete", {
+      entityType: "Contact",
+      entityId: id,
+      metadata: { name: contact.name },
+    });
+
+    revalidatePath("/contacts");
+    return { success: "Contact deleted." };
   } catch (error) {
     return toActionState(error);
   }
