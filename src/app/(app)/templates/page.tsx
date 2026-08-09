@@ -110,9 +110,17 @@ export default async function TemplatesPage() {
         </h2>
         <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">
           WhatsApp requires businesses to get message formats approved before
-          sending them to people who have not messaged first. Templates are
-          created and approved in WhatsApp Manager — this page mirrors them.
-          Only approved templates can be used in a campaign.
+          sending them to anyone who has not messaged first. Only approved
+          templates can be used in a campaign.
+        </p>
+        <p className="mt-2 text-sm text-slate-500 dark:text-slate-400">
+          You can write one here with{" "}
+          <strong className="text-slate-700 dark:text-slate-300">
+            New template
+          </strong>{" "}
+          — it goes straight to WhatsApp for approval, which usually takes a few
+          minutes. Templates created directly in WhatsApp Manager appear here
+          too, after a sync.
         </p>
       </div>
 
