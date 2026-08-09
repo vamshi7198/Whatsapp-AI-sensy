@@ -22,6 +22,10 @@ export const SETTING_KEYS = {
   MESSAGING_TIER: "meta.messaging_tier",
   LAST_CONNECTION_OK: "meta.last_connection_ok",
   LAST_CONNECTION_ERROR: "meta.last_connection_error",
+  /** Second destination for incoming webhooks, so an existing integration
+   *  keeps working — Meta allows only one callback URL per app. */
+  WEBHOOK_FORWARD_URL: "webhook.forward_url",
+  WEBHOOK_FORWARD_ENABLED: "webhook.forward_enabled",
   OPT_OUT_KEYWORDS: "compliance.opt_out_keywords",
   DEFAULT_OPT_IN: "compliance.default_opt_in",
   SEND_RATE_MPS: "campaign.send_rate_mps",

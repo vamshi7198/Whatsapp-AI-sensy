@@ -1,10 +1,13 @@
+import { createHmac, timingSafeEqual } from "node:crypto";
+
 import { after, NextResponse } from "next/server";
 
 import { safeEquals } from "@/lib/crypto";
 import { env } from "@/lib/env";
 import { moduleLogger } from "@/lib/logger";
+import { forwardWebhook } from "@/lib/webhooks/forwarder";
 import { processWebhookEvents } from "@/lib/webhooks/processor";
-import { getProvider } from "@/lib/whatsapp";
+import { parseMetaWebhook } from "@/lib/whatsapp/providers/meta/mappers";
 
 const log = moduleLogger("webhook");
 
@@ -19,7 +22,34 @@ const log = moduleLogger("webhook");
  * manufactures a duplicate. So the request path does the minimum — verify,
  * parse, respond 200 — and the database work happens after the response via
  * `after()`.
+ *
+ * Note what this route does NOT depend on: the Meta access token. Receiving
+ * needs only the App Secret, which lives in the environment. Requiring the
+ * token here would leave the inbox dead while a token was pending approval,
+ * for no security benefit.
  */
+
+/** Verifies X-Hub-Signature-256 over the raw request bytes. */
+function verifySignature(rawBody: Buffer, signatureHeader: string): boolean {
+  if (!env.META_APP_SECRET) {
+    log.error("Webhook received but META_APP_SECRET is not configured");
+    return false;
+  }
+
+  if (!signatureHeader?.startsWith("sha256=")) return false;
+
+  const expected = createHmac("sha256", env.META_APP_SECRET)
+    .update(rawBody)
+    .digest("hex");
+
+  const a = Buffer.from(expected, "utf8");
+  const b = Buffer.from(signatureHeader.slice("sha256=".length), "utf8");
+
+  // timingSafeEqual throws on length mismatch; the length is not the secret.
+  if (a.length !== b.length) return false;
+
+  return timingSafeEqual(a, b);
+}
 
 /**
  * GET — Meta's subscription handshake.
@@ -65,16 +95,7 @@ export async function POST(request: Request) {
   const rawBody = Buffer.from(await request.arrayBuffer());
   const signature = request.headers.get("x-hub-signature-256") ?? "";
 
-  const provider = await getProvider();
-
-  if (!provider) {
-    // Returning 200 stops Meta retrying something we can never process, while
-    // the log records that events were dropped.
-    log.error("Webhook received but WhatsApp is not configured");
-    return NextResponse.json({ received: true }, { status: 200 });
-  }
-
-  if (!provider.verifyWebhookSignature(rawBody, signature)) {
+  if (!verifySignature(rawBody, signature)) {
     log.warn(
       { hasSignature: Boolean(signature), bytes: rawBody.length },
       "Rejected webhook with an invalid signature",
@@ -91,7 +112,7 @@ export async function POST(request: Request) {
     return NextResponse.json({ received: true }, { status: 200 });
   }
 
-  const events = provider.parseWebhook(payload);
+  const events = parseMetaWebhook(payload);
 
   // Respond first, then persist. Slow processing inside the request would make
   // Meta retry and duplicate the very events we are trying to record once.
@@ -113,6 +134,11 @@ export async function POST(request: Request) {
         "Webhook processing threw",
       );
     }
+
+    // Pass a copy to any pre-existing integration. Runs after our own
+    // processing and independently of it: a broken forwarding target must
+    // never cost us an inbound message.
+    await forwardWebhook(rawBody, signature).catch(() => undefined);
   });
 
   return NextResponse.json({ received: true }, { status: 200 });

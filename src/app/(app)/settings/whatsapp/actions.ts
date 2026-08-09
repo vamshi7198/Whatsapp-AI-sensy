@@ -14,6 +14,7 @@ import {
   setSetting,
 } from "@/lib/settings";
 import { MetaCloudProvider } from "@/lib/whatsapp/providers/meta";
+import { isSafeForwardUrl } from "@/lib/webhooks/forwarder";
 import { env } from "@/lib/env";
 
 export interface WhatsAppSettingsState {
@@ -179,6 +180,59 @@ export async function testConnection(): Promise<WhatsAppSettingsState> {
         message: "Could not reach WhatsApp. Check your internet connection.",
       },
     };
+  }
+}
+
+/**
+ * Configures a second destination for incoming webhooks.
+ *
+ * Meta permits one callback URL per app, so pointing it here would otherwise
+ * silently break any existing integration. Forwarding keeps both alive.
+ */
+export async function saveWebhookForwarding(
+  _prev: WhatsAppSettingsState,
+  formData: FormData,
+): Promise<WhatsAppSettingsState> {
+  try {
+    const user = await requireApiAuth("settings:whatsapp");
+
+    const url = String(formData.get("forwardUrl") ?? "").trim();
+    const enabled = formData.get("forwardEnabled") === "on";
+
+    if (url && !isSafeForwardUrl(url)) {
+      return {
+        error:
+          "That address cannot be used. It must be a public https:// address.",
+      };
+    }
+
+    if (enabled && !url) {
+      return { error: "Enter the address to forward to, or switch it off." };
+    }
+
+    await setSetting(SETTING_KEYS.WEBHOOK_FORWARD_URL, url, user.id);
+    await setSetting(
+      SETTING_KEYS.WEBHOOK_FORWARD_ENABLED,
+      enabled ? "true" : "false",
+      user.id,
+    );
+
+    await audit(user, "settings.webhook_forwarding", {
+      metadata: { enabled, url },
+    });
+
+    revalidatePath("/settings/whatsapp");
+
+    return {
+      success: enabled
+        ? "Forwarding is on. A copy of every incoming message will also be sent to your existing system."
+        : "Forwarding is off.",
+    };
+  } catch (error) {
+    if (error instanceof ForbiddenError) {
+      return { error: "You do not have permission to change these settings." };
+    }
+    return { error: "Could not save. Please try again." };
   }
 }
 

@@ -8,6 +8,7 @@ import { Field, Input } from "@/components/ui/field";
 
 import {
   disconnectWhatsApp,
+  saveWebhookForwarding,
   saveWhatsAppSettings,
   testConnection,
   type WhatsAppSettingsState,
@@ -25,6 +26,8 @@ interface Initial {
   appSecretConfigured: boolean;
   webhookUrl: string;
   verifyTokenConfigured: boolean;
+  forwardUrl: string | null;
+  forwardEnabled: boolean;
 }
 
 function qualityTone(rating: string | null): "green" | "amber" | "red" | "neutral" {
@@ -302,6 +305,69 @@ export function WhatsAppSettingsForm({ initial }: { initial: Initial }) {
             </p>
           )}
         </div>
+      </section>
+
+      {/* Meta allows one callback URL per app, so adopting this platform would
+          otherwise silently kill an existing integration. */}
+      <section className="rounded-xl border border-slate-200 bg-white p-5 dark:border-slate-800 dark:bg-slate-900">
+        <h3 className="text-sm font-semibold text-slate-900 dark:text-slate-50">
+          Keep an existing system working
+        </h3>
+        <p className="mt-0.5 mb-4 text-sm text-slate-500 dark:text-slate-400">
+          WhatsApp can only send incoming messages to one address. If you
+          already have a system connected — a Google Sheet, an internal tool —
+          enter its address here and we will pass a copy on, so it keeps
+          working exactly as before.
+        </p>
+
+        <form
+          action={(formData) => {
+            startTransition(async () => {
+              setState(await saveWebhookForwarding({}, formData));
+            });
+          }}
+          className="space-y-4"
+        >
+          <Field
+            label="Forward a copy to"
+            htmlFor="forwardUrl"
+            hint="optional"
+          >
+            <Input
+              id="forwardUrl"
+              name="forwardUrl"
+              type="url"
+              defaultValue={initial.forwardUrl ?? ""}
+              placeholder="https://script.google.com/macros/s/..../exec"
+            />
+            <p className="mt-1 text-xs text-slate-400">
+              Must start with https://. Copy the address exactly as it appears
+              in your Meta webhook settings before you change it.
+            </p>
+          </Field>
+
+          <label className="flex items-start gap-2 rounded-lg border border-slate-200 p-3 dark:border-slate-700">
+            <input
+              type="checkbox"
+              name="forwardEnabled"
+              defaultChecked={initial.forwardEnabled}
+              className="mt-0.5 rounded border-slate-300"
+            />
+            <span className="text-sm text-slate-700 dark:text-slate-300">
+              Send a copy of every incoming message to that address
+              <span className="mt-0.5 block text-xs text-slate-500 dark:text-slate-400">
+                If that system is ever unreachable, your messages still arrive
+                here as normal — nothing is lost.
+              </span>
+            </span>
+          </label>
+
+          <div className="flex justify-end">
+            <Button type="submit" variant="secondary" disabled={isPending}>
+              {isPending ? "Saving…" : "Save forwarding"}
+            </Button>
+          </div>
+        </form>
       </section>
 
       {initial.tokenIsSet && (
