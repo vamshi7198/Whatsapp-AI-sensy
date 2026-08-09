@@ -1,4 +1,7 @@
+import Link from "next/link";
+
 import { Badge } from "@/components/ui/badge";
+import { buttonVariants } from "@/components/ui/button";
 import { EmptyState } from "@/components/ui/empty-state";
 import { TemplatePreview } from "@/components/template-preview";
 import { requireAuth } from "@/lib/auth/guards";
@@ -74,7 +77,17 @@ export default async function TemplatesPage() {
           </p>
         </div>
 
-        {can(user, "template:sync") && <SyncButton disabled={!connected} />}
+        <div className="flex items-center gap-2">
+          {can(user, "template:create") && (
+            <Link
+              href="/templates/new"
+              className={buttonVariants({ variant: "secondary" })}
+            >
+              New template
+            </Link>
+          )}
+          {can(user, "template:sync") && <SyncButton disabled={!connected} />}
+        </div>
       </div>
 
       {!connected && (
