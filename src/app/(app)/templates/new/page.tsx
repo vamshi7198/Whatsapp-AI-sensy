@@ -2,6 +2,7 @@ import Link from "next/link";
 
 import { Button } from "@/components/ui/button";
 import { requireAuth } from "@/lib/auth/guards";
+import { prisma } from "@/lib/db";
 import { isMetaConnected } from "@/lib/settings";
 
 import { TemplateComposer } from "./_composer";
@@ -10,7 +11,30 @@ export const metadata = { title: "New template" };
 
 export default async function NewTemplatePage() {
   await requireAuth("template:create");
-  const connected = await isMetaConnected();
+
+  const [connected, sampleContacts] = await Promise.all([
+    isMetaConnected(),
+    prisma.contact.findMany({
+      where: { deletedAt: null },
+      orderBy: { createdAt: "desc" },
+      take: 25,
+      select: {
+        id: true,
+        name: true,
+        phoneE164: true,
+        email: true,
+        attributes: true,
+      },
+    }),
+  ]);
+
+  const contacts = sampleContacts.map((c) => ({
+    id: c.id,
+    name: c.name,
+    phoneE164: c.phoneE164,
+    email: c.email,
+    attributes: (c.attributes as Record<string, string>) ?? {},
+  }));
 
   return (
     <div className="mx-auto max-w-3xl space-y-5">
@@ -46,7 +70,7 @@ export default async function NewTemplatePage() {
           </Link>
         </div>
       ) : (
-        <TemplateComposer />
+        <TemplateComposer contacts={contacts} />
       )}
     </div>
   );

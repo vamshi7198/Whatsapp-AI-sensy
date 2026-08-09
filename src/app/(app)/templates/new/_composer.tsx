@@ -12,6 +12,11 @@ import {
   type TemplateButton,
 } from "@/lib/templates/builder";
 
+import {
+  TemplatePreviewWithContact,
+  type SampleContact,
+} from "../_preview-with-contact";
+
 import { createTemplateAction, type CreateTemplateState } from "./actions";
 import { ButtonEditor } from "./_button-editor";
 
@@ -29,7 +34,11 @@ const LANGUAGES = [
   { code: "bn", label: "Bengali" },
 ];
 
-export function TemplateComposer() {
+export function TemplateComposer({
+  contacts = [],
+}: {
+  contacts?: SampleContact[];
+}) {
   const [state, setState] = useState<CreateTemplateState>({});
   const [isPending, startTransition] = useTransition();
 
@@ -43,12 +52,6 @@ export function TemplateComposer() {
   const [buttons, setButtons] = useState<TemplateButton[]>([]);
 
   const variables = extractVariables(bodyText);
-
-  // Live preview with the example values substituted, so what is on screen is
-  // what a customer would actually read.
-  const preview = bodyText.replace(/\{\{\s*(\d+)\s*\}\}/g, (match, i: string) =>
-    examples[i]?.trim() ? examples[i] : match,
-  );
 
   function submit(formData: FormData) {
     // Buttons live in React state rather than form fields, so they are
@@ -260,48 +263,38 @@ export function TemplateComposer() {
         issues={state.issues}
       />
 
-      {bodyText.trim() && (
-        <section className="rounded-xl border border-slate-200 bg-white p-5 dark:border-slate-800 dark:bg-slate-900">
-          <h2 className="mb-3 text-sm font-semibold text-slate-900 dark:text-slate-50">
-            How it will look
-          </h2>
+      {/* Always present, so the shape of the message is visible from the
+          first keystroke rather than appearing once enough is typed. */}
+      <section className="rounded-xl border border-slate-200 bg-white p-5 dark:border-slate-800 dark:bg-slate-900">
+        <h2 className="text-sm font-semibold text-slate-900 dark:text-slate-50">
+          How it will look
+        </h2>
+        <p className="mt-0.5 mb-3 text-sm text-slate-500 dark:text-slate-400">
+          {contacts.length > 0
+            ? "Choose a real contact to see the message exactly as they would receive it."
+            : "Add contacts to preview this against real details."}
+        </p>
 
-          <div className="rounded-xl bg-slate-100 p-3 dark:bg-slate-950/50">
-            <div className="ml-auto max-w-sm rounded-xl rounded-br-sm bg-emerald-100 px-3 py-2 text-sm shadow-sm dark:bg-emerald-900">
-              {headerText && (
-                <p className="mb-1 font-semibold text-slate-900 dark:text-emerald-50">
-                  {headerText}
-                </p>
-              )}
-              <p className="whitespace-pre-wrap text-slate-900 dark:text-emerald-50">
-                {preview}
-              </p>
-              {footerText && (
-                <p className="mt-1.5 text-xs text-slate-500 dark:text-emerald-200/70">
-                  {footerText}
-                </p>
-              )}
-            </div>
-
-            {/* Buttons render as separate tappable rows beneath the bubble,
-                which is how WhatsApp actually shows them. */}
-            {buttons.length > 0 && (
-              <div className="mt-1 ml-auto max-w-sm space-y-1">
-                {buttons.map((b, i) => (
-                  <div
-                    key={i}
-                    className="rounded-lg bg-white px-3 py-1.5 text-center text-sm text-sky-600 shadow-sm dark:bg-slate-800 dark:text-sky-400"
-                  >
-                    {b.type === "PHONE_NUMBER" && "📞 "}
-                    {b.type === "URL" && "🔗 "}
-                    {b.text || "Button"}
-                  </div>
-                ))}
-              </div>
-            )}
+        {bodyText.trim() ? (
+          <TemplatePreviewWithContact
+            body={bodyText}
+            header={headerText || undefined}
+            footer={footerText || undefined}
+            variableCount={variables.length}
+            // The example values typed above act as the fallback, which is
+            // exactly what WhatsApp's reviewer will see.
+            metaExamples={variables.map((i) => examples[i] ?? "")}
+            contacts={contacts}
+            buttons={buttons}
+          />
+        ) : (
+          <div className="rounded-xl bg-slate-100 p-6 text-center dark:bg-slate-950/50">
+            <p className="text-sm text-slate-400">
+              Write the message text above and it will appear here.
+            </p>
           </div>
-        </section>
-      )}
+        )}
+      </section>
 
       <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-slate-200 bg-white p-5 dark:border-slate-800 dark:bg-slate-900">
         <div className="text-sm text-slate-500 dark:text-slate-400">

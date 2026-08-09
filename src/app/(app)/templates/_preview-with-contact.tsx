@@ -20,6 +20,11 @@ export interface SampleContact {
  * contact stored as "vamshi p." rendering as "Hi vamshi p.!", or a blank name
  * leaving "Hi !". Rendering with real data is the only way to see that.
  */
+export interface PreviewButton {
+  type: "QUICK_REPLY" | "URL" | "PHONE_NUMBER";
+  text: string;
+}
+
 export function TemplatePreviewWithContact({
   body,
   header,
@@ -27,6 +32,7 @@ export function TemplatePreviewWithContact({
   variableCount,
   metaExamples,
   contacts,
+  buttons = [],
 }: {
   body: string;
   header?: string;
@@ -35,6 +41,7 @@ export function TemplatePreviewWithContact({
   /** Example values supplied to Meta when the template was created. */
   metaExamples: string[];
   contacts: SampleContact[];
+  buttons?: PreviewButton[];
 }) {
   const [contactId, setContactId] = useState(contacts[0]?.id ?? "");
   const [sources, setSources] = useState<Record<string, string>>(() => {
@@ -153,6 +160,23 @@ export function TemplatePreviewWithContact({
             </p>
           )}
         </div>
+
+        {/* Buttons appear as separate tappable rows beneath the bubble, not
+            inside it, which is how WhatsApp renders them. */}
+        {buttons.length > 0 && (
+          <div className="mt-1 ml-auto max-w-sm space-y-1">
+            {buttons.map((b, i) => (
+              <div
+                key={i}
+                className="rounded-lg bg-white px-3 py-1.5 text-center text-sm text-sky-600 shadow-sm dark:bg-slate-800 dark:text-sky-400"
+              >
+                {b.type === "PHONE_NUMBER" && "📞 "}
+                {b.type === "URL" && "🔗 "}
+                {b.text || "Button"}
+              </div>
+            ))}
+          </div>
+        )}
       </div>
 
       {/* A blank value is the failure people only notice after sending. */}
