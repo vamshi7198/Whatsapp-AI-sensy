@@ -9,13 +9,13 @@ Cloudflare's network, so nothing on your router or firewall needs opening.
 **What you need**
 
 - A computer that stays switched on and awake (the "server")
-- A domain you own, e.g. `uncanned.in`
+- Your domain, `uncanned.in`
 - A free Cloudflare account (no card)
 - About 45 minutes
 
 **What this gives you**
 
-- `https://whatsapp.yourdomain.com` — your team signs in from anywhere
+- `https://whatsapp.uncanned.in` — your team signs in from anywhere
 - A stable webhook address for Meta, so incoming messages arrive
 - HTTPS with a valid certificate, handled by Cloudflare
 - Your customer data stays on your own machine
@@ -74,7 +74,7 @@ powershell -File deploy\generate-secrets.ps1
 Then edit `.env` and set:
 
 ```
-APP_URL="https://whatsapp.yourdomain.com"
+APP_URL="https://whatsapp.uncanned.in"
 NODE_ENV="production"
 ```
 
@@ -99,14 +99,22 @@ first sign-in.
 1. Sign up at [cloudflare.com](https://dash.cloudflare.com/sign-up) — free, no card.
 2. **Add a site** → enter your domain → choose the **Free** plan.
 3. Cloudflare shows two nameservers. Set these at your domain registrar
-   (GoDaddy, BigRock, Namecheap, wherever you bought the domain), replacing the
-   existing ones.
+   (GoDaddy, BigRock, Namecheap, wherever `uncanned.in` was bought), replacing
+   the existing ones.
 4. Wait for Cloudflare to confirm the domain is active. This usually takes
    under an hour but can take up to 24.
 
-> This does **not** move your website or email. It only changes who answers DNS
-> lookups. Existing records are copied across during setup — check them before
-> you finish.
+> ⚠️ **Check the imported DNS records before you finish.** This does not move
+> your website or email — it only changes who answers DNS lookups. Cloudflare
+> copies your existing records during setup, but verify they are all there,
+> especially:
+>
+> - the `A` / `CNAME` records for `uncanned.in` and `www` (your website)
+> - any `MX` records (email delivery)
+> - any `TXT` records for SPF, DKIM or domain verification
+>
+> If an MX record is missed, company email stops. Compare against your
+> registrar's current DNS list before switching the nameservers.
 
 ---
 
@@ -120,7 +128,7 @@ A browser opens; choose your domain and authorise.
 
 ```powershell
 cloudflared tunnel create uncanned-whatsapp
-cloudflared tunnel route dns uncanned-whatsapp whatsapp.yourdomain.com
+cloudflared tunnel route dns uncanned-whatsapp whatsapp.uncanned.in
 ```
 
 Create `C:\Users\<you>\.cloudflared\config.yml`:
@@ -130,7 +138,7 @@ tunnel: uncanned-whatsapp
 credentials-file: C:\Users\<you>\.cloudflared\<tunnel-id>.json
 
 ingress:
-  - hostname: whatsapp.yourdomain.com
+  - hostname: whatsapp.uncanned.in
     service: http://localhost:3000
   - service: http_status:404
 ```
@@ -181,7 +189,7 @@ In your Meta app → **WhatsApp → Configuration → Webhooks → Edit**:
 
 | Field | Value |
 |---|---|
-| Callback URL | `https://whatsapp.yourdomain.com/api/webhooks/whatsapp` |
+| Callback URL | `https://whatsapp.uncanned.in/api/webhooks/whatsapp` |
 | Verify token | the `META_WEBHOOK_VERIFY_TOKEN` value from your `.env` |
 
 Click **Verify and save**. Meta calls your server immediately; if the tunnel
@@ -215,7 +223,7 @@ came from Meta, and it will reject them all rather than trust them.
 
 ## Step 7 — Finish in the app
 
-1. Open `https://whatsapp.yourdomain.com` and sign in.
+1. Open `https://whatsapp.uncanned.in` and sign in.
 2. **Settings → WhatsApp connection** — enter WABA ID, Phone Number ID and your
    System User access token, then **Test connection**.
 3. **Settings → Team members** — add your colleagues as Managers.
@@ -250,7 +258,7 @@ Restart-Service UncannedWhatsAppWeb, UncannedWhatsAppWorker
 1. Is the machine on and awake?
 2. `Get-Service Uncanned*` — both Running?
 3. `Get-Service cloudflared` — Running?
-4. Does `https://whatsapp.yourdomain.com/login` load from your phone?
+4. Does `https://whatsapp.uncanned.in/login` load from your phone?
 5. **Settings → Activity log** in the app.
 
 ---

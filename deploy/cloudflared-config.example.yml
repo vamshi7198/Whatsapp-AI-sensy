@@ -1,0 +1,24 @@
+# Cloudflare Tunnel configuration for Uncanned WhatsApp.
+#
+# Copy to:  C:\Users\<your-user>\.cloudflared\config.yml
+# Then replace <tunnel-id> and <your-user> below.
+#
+# The tunnel ID is printed by `cloudflared tunnel create uncanned-whatsapp`
+# and is also the name of the .json credentials file it writes.
+
+tunnel: uncanned-whatsapp
+credentials-file: C:\Users\<your-user>\.cloudflared\<tunnel-id>.json
+
+# Cloudflare terminates TLS at its edge and forwards to the local app over
+# plain HTTP on the loopback interface, which never leaves this machine.
+ingress:
+  - hostname: whatsapp.uncanned.in
+    service: http://localhost:3000
+    originRequest:
+      # Campaign pages and CSV imports can take a while; the default 30s
+      # would cut them off.
+      connectTimeout: 30s
+      noTLSVerify: false
+
+  # Anything not matching a hostname above is refused rather than forwarded.
+  - service: http_status:404
