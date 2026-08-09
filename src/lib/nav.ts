@@ -39,7 +39,6 @@ export const NAV_ITEMS: NavItem[] = [
     icon: "MessageSquare",
     permission: "inbox:view",
     primary: true,
-    comingSoon: true,
   },
   {
     label: "Campaigns",
@@ -59,7 +58,6 @@ export const NAV_ITEMS: NavItem[] = [
     href: "/automations",
     icon: "Zap",
     permission: "automation:view",
-    comingSoon: true,
   },
   {
     label: "Reports",
