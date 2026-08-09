@@ -10,6 +10,7 @@ import {
   buildTemplateComponents,
   extractVariables,
   validateTemplateDraft,
+  type TemplateButton,
   type TemplateDraft,
 } from "@/lib/templates/builder";
 import { getProvider } from "@/lib/whatsapp";
@@ -37,6 +38,17 @@ export async function createTemplateAction(
       examples[index] = String(formData.get(`example_${index}`) ?? "");
     }
 
+    // Buttons arrive as JSON. Malformed input is treated as "no buttons"
+    // rather than failing the whole submission on a parse error.
+    let buttons: TemplateButton[] = [];
+    try {
+      const raw = String(formData.get("buttons") ?? "[]");
+      const parsed: unknown = JSON.parse(raw);
+      if (Array.isArray(parsed)) buttons = parsed as TemplateButton[];
+    } catch {
+      buttons = [];
+    }
+
     const draft: TemplateDraft = {
       name: String(formData.get("name") ?? "").trim().toLowerCase(),
       language: String(formData.get("language") ?? "en"),
@@ -47,6 +59,7 @@ export async function createTemplateAction(
       bodyText,
       footerText: String(formData.get("footerText") ?? "").trim() || undefined,
       examples,
+      buttons,
     };
 
     const issues = validateTemplateDraft(draft);

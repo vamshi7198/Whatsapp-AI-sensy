@@ -9,9 +9,11 @@ import { Field, Input, Select, Textarea } from "@/components/ui/field";
 import {
   extractVariables,
   suggestTemplateName,
+  type TemplateButton,
 } from "@/lib/templates/builder";
 
 import { createTemplateAction, type CreateTemplateState } from "./actions";
+import { ButtonEditor } from "./_button-editor";
 
 const LANGUAGES = [
   { code: "en", label: "English" },
@@ -38,6 +40,7 @@ export function TemplateComposer() {
   const [bodyText, setBodyText] = useState("");
   const [footerText, setFooterText] = useState("");
   const [examples, setExamples] = useState<Record<string, string>>({});
+  const [buttons, setButtons] = useState<TemplateButton[]>([]);
 
   const variables = extractVariables(bodyText);
 
@@ -48,6 +51,10 @@ export function TemplateComposer() {
   );
 
   function submit(formData: FormData) {
+    // Buttons live in React state rather than form fields, so they are
+    // serialised here rather than relying on hidden inputs staying in sync.
+    formData.set("buttons", JSON.stringify(buttons));
+
     startTransition(async () => {
       setState(await createTemplateAction({}, formData));
     });
@@ -247,6 +254,12 @@ export function TemplateComposer() {
         </section>
       )}
 
+      <ButtonEditor
+        buttons={buttons}
+        onChange={setButtons}
+        issues={state.issues}
+      />
+
       {bodyText.trim() && (
         <section className="rounded-xl border border-slate-200 bg-white p-5 dark:border-slate-800 dark:bg-slate-900">
           <h2 className="mb-3 text-sm font-semibold text-slate-900 dark:text-slate-50">
@@ -269,6 +282,23 @@ export function TemplateComposer() {
                 </p>
               )}
             </div>
+
+            {/* Buttons render as separate tappable rows beneath the bubble,
+                which is how WhatsApp actually shows them. */}
+            {buttons.length > 0 && (
+              <div className="mt-1 ml-auto max-w-sm space-y-1">
+                {buttons.map((b, i) => (
+                  <div
+                    key={i}
+                    className="rounded-lg bg-white px-3 py-1.5 text-center text-sm text-sky-600 shadow-sm dark:bg-slate-800 dark:text-sky-400"
+                  >
+                    {b.type === "PHONE_NUMBER" && "📞 "}
+                    {b.type === "URL" && "🔗 "}
+                    {b.text || "Button"}
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         </section>
       )}
