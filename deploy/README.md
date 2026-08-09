@@ -9,9 +9,8 @@ Cloudflare's network, so nothing on your router or firewall needs opening.
 **What you need**
 
 - A computer that stays switched on and awake (the "server")
-- Your domain, `uncanned.in`
-- A free Cloudflare account (no card)
-- About 45 minutes
+- Login for the Cloudflare account that already holds `uncanned.in`
+- About 30 minutes
 
 **What this gives you**
 
@@ -94,27 +93,16 @@ first sign-in.
 
 ---
 
-## Step 3 — Connect your domain to Cloudflare
+## Step 3 — Cloudflare
 
-1. Sign up at [cloudflare.com](https://dash.cloudflare.com/sign-up) — free, no card.
-2. **Add a site** → enter your domain → choose the **Free** plan.
-3. Cloudflare shows two nameservers. Set these at your domain registrar
-   (GoDaddy, BigRock, Namecheap, wherever `uncanned.in` was bought), replacing
-   the existing ones.
-4. Wait for Cloudflare to confirm the domain is active. This usually takes
-   under an hour but can take up to 24.
+**Nothing to do.** `uncanned.in` is already on Cloudflare for the website, so
+the domain is set up and the nameservers stay exactly as they are.
 
-> ⚠️ **Check the imported DNS records before you finish.** This does not move
-> your website or email — it only changes who answers DNS lookups. Cloudflare
-> copies your existing records during setup, but verify they are all there,
-> especially:
->
-> - the `A` / `CNAME` records for `uncanned.in` and `www` (your website)
-> - any `MX` records (email delivery)
-> - any `TXT` records for SPF, DKIM or domain verification
->
-> If an MX record is missed, company email stops. Compare against your
-> registrar's current DNS list before switching the nameservers.
+Step 4 adds a single DNS record for the `whatsapp` subdomain. Your website,
+email and every existing record are untouched.
+
+> You will need the login for the Cloudflare account that holds `uncanned.in`,
+> because the next step opens a browser to authorise the tunnel.
 
 ---
 
@@ -124,12 +112,21 @@ first sign-in.
 cloudflared tunnel login
 ```
 
-A browser opens; choose your domain and authorise.
+A browser opens. Sign in to the Cloudflare account that holds `uncanned.in`,
+then select `uncanned.in` and authorise.
 
 ```powershell
 cloudflared tunnel create uncanned-whatsapp
 cloudflared tunnel route dns uncanned-whatsapp whatsapp.uncanned.in
 ```
+
+The second command adds **one** DNS record — a proxied `CNAME` for
+`whatsapp.uncanned.in` pointing at the tunnel. It does not read, change or
+remove anything else in the zone, so your website and email are unaffected.
+
+> If a `whatsapp` record already exists in that zone, the command fails rather
+> than overwriting it. Delete or rename the old record first, or use a
+> different subdomain such as `chat.uncanned.in`.
 
 Create `C:\Users\<you>\.cloudflared\config.yml`:
 
