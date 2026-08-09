@@ -6,8 +6,11 @@ import { Button } from "@/components/ui/button";
 import { requireAuth } from "@/lib/auth/guards";
 import { listTags } from "@/lib/contacts/service";
 import { isMetaConnected } from "@/lib/settings";
-import { listSendableTemplates } from "@/lib/templates/service";
-import { getTemplateBody } from "@/lib/templates/service";
+import {
+  getTemplateBody,
+  getTemplateHeaderMediaType,
+  listSendableTemplates,
+} from "@/lib/templates/service";
 import { prisma } from "@/lib/db";
 
 import { CampaignWizard } from "./_wizard";
@@ -83,6 +86,7 @@ export default async function NewCampaignPage() {
             variableCount: t.variableCount,
             body: getTemplateBody(t.components),
             components: t.components,
+            headerMediaType: getTemplateHeaderMediaType(t.components),
           }))}
           tags={tags.map((t) => ({
             id: t.id,

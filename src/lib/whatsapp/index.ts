@@ -20,7 +20,7 @@ export async function getProvider(): Promise<WhatsAppProvider | null> {
   const config = await getMetaConfig();
   if (!config) return null;
 
-  return new MetaCloudProvider(config, env.META_APP_SECRET);
+  return new MetaCloudProvider(config, env.META_APP_SECRET, env.META_APP_ID);
 }
 
 /**

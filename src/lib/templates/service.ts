@@ -189,25 +189,56 @@ export async function getTemplate(id: string) {
   return prisma.template.findUnique({ where: { id } });
 }
 
+/**
+ * Components come out of a JSON column, so they can be anything if a row is
+ * ever malformed. Every reader goes through here rather than casting and
+ * hoping, because a template page that throws is worse than one missing a
+ * preview.
+ */
+function asComponents(components: unknown): TemplateComponent[] {
+  return Array.isArray(components) ? (components as TemplateComponent[]) : [];
+}
+
 /** Extracts the body text of a template, for previews. */
 export function getTemplateBody(components: unknown): string {
-  const list = (components as TemplateComponent[]) ?? [];
-  return list.find((c) => c.type === "BODY")?.text ?? "";
+  return asComponents(components).find((c) => c.type === "BODY")?.text ?? "";
 }
 
 export function getTemplateHeader(components: unknown): TemplateComponent | null {
-  const list = (components as TemplateComponent[]) ?? [];
-  return list.find((c) => c.type === "HEADER") ?? null;
+  return asComponents(components).find((c) => c.type === "HEADER") ?? null;
+}
+
+/**
+ * The media type a template's header expects, or null for text/no header.
+ *
+ * A campaign using one of these must supply a file, and Meta rejects the send
+ * outright if it is missing — so the wizard asks for it rather than letting
+ * every message fail identically.
+ */
+export function getTemplateHeaderMediaType(
+  components: unknown,
+): "image" | "video" | "document" | null {
+  const header = getTemplateHeader(components);
+  if (!header) return null;
+
+  switch (header.format) {
+    case "IMAGE":
+      return "image";
+    case "VIDEO":
+      return "video";
+    case "DOCUMENT":
+      return "document";
+    default:
+      return null;
+  }
 }
 
 export function getTemplateFooter(components: unknown): string {
-  const list = (components as TemplateComponent[]) ?? [];
-  return list.find((c) => c.type === "FOOTER")?.text ?? "";
+  return asComponents(components).find((c) => c.type === "FOOTER")?.text ?? "";
 }
 
 export function getTemplateButtons(components: unknown) {
-  const list = (components as TemplateComponent[]) ?? [];
-  return list.find((c) => c.type === "BUTTONS")?.buttons ?? [];
+  return asComponents(components).find((c) => c.type === "BUTTONS")?.buttons ?? [];
 }
 
 /**

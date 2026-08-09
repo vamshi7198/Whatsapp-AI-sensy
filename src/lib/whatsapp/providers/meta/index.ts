@@ -6,7 +6,9 @@ import type { MetaConfig } from "@/lib/settings";
 import type { WhatsAppProvider } from "../../provider";
 import type {
   BusinessAccountProfile,
+  BusinessProfile,
   CreateTemplateInput,
+  MediaUploadResult,
   NormalisedWebhookEvent,
   Paginated,
   PhoneNumberProfile,
@@ -15,6 +17,7 @@ import type {
   SendResult,
   SendTemplateInput,
   SendTextInput,
+  UpdateBusinessProfileInput,
 } from "../../types";
 import { MetaClient } from "./client";
 import {
@@ -51,6 +54,8 @@ export class MetaCloudProvider implements WhatsAppProvider {
   constructor(
     private readonly config: MetaConfig,
     private readonly appSecret?: string,
+    /** Needed only for resumable uploads, which run against the app node. */
+    private readonly appId?: string,
   ) {
     this.client = new MetaClient(config);
   }
@@ -98,6 +103,26 @@ export class MetaCloudProvider implements WhatsAppProvider {
       input.bodyVariables,
       input.headerVariables,
     );
+
+    // A media header is its own component and must come first, ahead of the
+    // body — Meta matches components positionally against the template.
+    if (input.headerMedia) {
+      const { type, link, id, filename } = input.headerMedia;
+
+      components.unshift({
+        type: "header",
+        parameters: [
+          {
+            type,
+            [type]: {
+              ...(link ? { link } : {}),
+              ...(id ? { id } : {}),
+              ...(filename && type === "document" ? { filename } : {}),
+            },
+          },
+        ],
+      });
+    }
 
     return this.send({
       messaging_product: "whatsapp",
@@ -256,6 +281,179 @@ export class MetaCloudProvider implements WhatsAppProvider {
       timezoneId: result.data.timezone_id,
       messageTemplateNamespace: result.data.message_template_namespace,
     };
+  }
+
+  /* ---------------------------------------------------------------- */
+  /* Business profile                                                  */
+  /* ---------------------------------------------------------------- */
+
+  async getBusinessProfile(): Promise<BusinessProfile | null> {
+    const result = await this.client.request<{
+      data?: Array<{
+        about?: string;
+        address?: string;
+        description?: string;
+        email?: string;
+        websites?: string[];
+        vertical?: string;
+        profile_picture_url?: string;
+      }>;
+    }>(`${this.config.phoneNumberId}/whatsapp_business_profile`, {
+      query: {
+        fields:
+          "about,address,description,email,profile_picture_url,websites,vertical",
+      },
+    });
+
+    if (result.ok !== true) return null;
+
+    const profile = result.data.data?.[0];
+    if (!profile) return {};
+
+    return {
+      about: profile.about,
+      address: profile.address,
+      description: profile.description,
+      email: profile.email,
+      websites: profile.websites,
+      vertical: profile.vertical,
+      profilePictureUrl: profile.profile_picture_url,
+    };
+  }
+
+  async updateBusinessProfile(
+    input: UpdateBusinessProfileInput,
+  ): Promise<boolean> {
+    // Only send the fields being changed. Passing an empty string would
+    // clear a value the user never intended to touch.
+    const body: Record<string, unknown> = { messaging_product: "whatsapp" };
+
+    if (input.about !== undefined) body.about = input.about;
+    if (input.address !== undefined) body.address = input.address;
+    if (input.description !== undefined) body.description = input.description;
+    if (input.email !== undefined) body.email = input.email;
+    if (input.vertical !== undefined) body.vertical = input.vertical;
+    if (input.websites !== undefined) body.websites = input.websites;
+    if (input.profilePictureHandle !== undefined) {
+      body.profile_picture_handle = input.profilePictureHandle;
+    }
+
+    const result = await this.client.request(
+      `${this.config.phoneNumberId}/whatsapp_business_profile`,
+      { method: "POST", body },
+    );
+
+    return result.ok === true;
+  }
+
+  /* ---------------------------------------------------------------- */
+  /* Uploads                                                           */
+  /* ---------------------------------------------------------------- */
+
+  /**
+   * Uploads an image for the profile picture.
+   *
+   * This uses the resumable upload API, which is a separate two-step flow
+   * from the media API used for messages, and returns a file *handle* rather
+   * than a media id. The two are not interchangeable.
+   */
+  async uploadProfilePicture(
+    bytes: Buffer,
+    mimeType: string,
+  ): Promise<string | null> {
+    if (!this.appId) {
+      log.error("Cannot upload a profile picture without META_APP_ID");
+      return null;
+    }
+
+    // Step 1: open a session against the app, not the phone number.
+    const sessionUrl =
+      `https://graph.facebook.com/${this.config.apiVersion}/${this.appId}/uploads` +
+      `?file_length=${bytes.length}&file_type=${encodeURIComponent(mimeType)}`;
+
+    const sessionResponse = await fetch(sessionUrl, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${this.config.accessToken}` },
+    });
+
+    const session = (await sessionResponse.json()) as {
+      id?: string;
+      error?: { message?: string };
+    };
+
+    if (!session.id) {
+      log.error({ err: session.error?.message }, "Could not start the upload");
+      return null;
+    }
+
+    // Step 2: send the bytes. file_offset 0 because we never resume — these
+    // are profile pictures, not large files.
+    const uploadResponse = await fetch(
+      `https://graph.facebook.com/${this.config.apiVersion}/${session.id}`,
+      {
+        method: "POST",
+        headers: {
+          Authorization: `OAuth ${this.config.accessToken}`,
+          file_offset: "0",
+          "Content-Type": mimeType,
+        },
+        body: new Uint8Array(bytes),
+      },
+    );
+
+    const uploaded = (await uploadResponse.json()) as {
+      h?: string;
+      error?: { message?: string };
+    };
+
+    if (!uploaded.h) {
+      log.error({ err: uploaded.error?.message }, "Upload failed");
+      return null;
+    }
+
+    return uploaded.h;
+  }
+
+  /**
+   * Uploads media for sending in a message.
+   *
+   * Returns a media id, which Meta expires after roughly a week — fine for a
+   * one-off campaign, not for a template meant to be reused.
+   */
+  async uploadMedia(
+    bytes: Buffer,
+    mimeType: string,
+    filename: string,
+  ): Promise<MediaUploadResult | null> {
+    const form = new FormData();
+    form.append("messaging_product", "whatsapp");
+    form.append("type", mimeType);
+    form.append(
+      "file",
+      new Blob([new Uint8Array(bytes)], { type: mimeType }),
+      filename,
+    );
+
+    const response = await fetch(
+      `https://graph.facebook.com/${this.config.apiVersion}/${this.config.phoneNumberId}/media`,
+      {
+        method: "POST",
+        headers: { Authorization: `Bearer ${this.config.accessToken}` },
+        body: form,
+      },
+    );
+
+    const body = (await response.json()) as {
+      id?: string;
+      error?: { message?: string };
+    };
+
+    if (!body.id) {
+      log.error({ err: body.error?.message }, "Media upload failed");
+      return null;
+    }
+
+    return { id: body.id };
   }
 
   /* ---------------------------------------------------------------- */

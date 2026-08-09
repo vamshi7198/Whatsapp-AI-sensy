@@ -1,6 +1,7 @@
 import Link from "next/link";
+import { redirect } from "next/navigation";
 
-import { requireAuth } from "@/lib/auth/guards";
+import { requireUser } from "@/lib/auth/guards";
 import { can, type Permission } from "@/lib/rbac";
 
 const SECTIONS: Array<{
@@ -9,6 +10,7 @@ const SECTIONS: Array<{
   permission: Permission;
 }> = [
   { label: "WhatsApp connection", href: "/settings/whatsapp", permission: "settings:whatsapp" },
+  { label: "Business profile", href: "/settings/business", permission: "settings:business" },
   { label: "Team members", href: "/settings/users", permission: "settings:users" },
   { label: "Compliance", href: "/settings/compliance", permission: "settings:compliance" },
   { label: "Activity log", href: "/settings/logs", permission: "logs:view" },
@@ -19,8 +21,14 @@ export default async function SettingsLayout({
 }: {
   children: React.ReactNode;
 }) {
-  const user = await requireAuth("settings:view");
+  // Gated on holding *any* settings permission rather than settings:view.
+  // A manager can edit the business profile but not the API connection, and
+  // requiring settings:view would have locked them out of a page their role
+  // explicitly allows.
+  const user = await requireUser();
   const visible = SECTIONS.filter((s) => can(user, s.permission));
+
+  if (visible.length === 0) redirect("/");
 
   return (
     <div className="space-y-5">

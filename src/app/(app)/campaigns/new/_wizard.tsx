@@ -22,6 +22,7 @@ import {
   type SendState,
 } from "../actions";
 import { CsvAudiencePicker, ManualContactPicker } from "./_audience-picker";
+import { MediaUpload } from "./_media-upload";
 
 interface TemplateOption {
   id: string;
@@ -31,6 +32,8 @@ interface TemplateOption {
   variableCount: number;
   body: string;
   components: unknown;
+  /** Set when the template's header is media rather than text. */
+  headerMediaType: "image" | "video" | "document" | null;
 }
 
 interface TagOption {
@@ -122,6 +125,7 @@ export function CampaignWizard({
   const [manualContacts, setManualContacts] = useState<ContactSearchResult[]>(
     [],
   );
+  const [headerMediaUrl, setHeaderMediaUrl] = useState<string | null>(null);
 
   const template = templates.find((t) => t.id === templateId);
   const variableIndexes = template
@@ -150,6 +154,11 @@ export function CampaignWizard({
     formData.set("audience", JSON.stringify(audience));
     formData.set("mapping", JSON.stringify(mapping));
 
+    if (headerMediaUrl && template?.headerMediaType) {
+      formData.set("headerMediaUrl", headerMediaUrl);
+      formData.set("headerMediaType", template.headerMediaType);
+    }
+
     startTransition(async () => {
       const result = await sendCampaign({}, formData);
       setSendState(result);
@@ -175,7 +184,10 @@ export function CampaignWizard({
         : step === 3
           ? Boolean(templateId)
           : step === 4
-            ? variableIndexes.every((i) => mapping[i])
+            ? variableIndexes.every((i) => mapping[i]) &&
+              // A media-header template without a file is refused by Meta for
+              // every recipient, so it cannot be left until the end.
+              (!template?.headerMediaType || Boolean(headerMediaUrl))
             : true;
 
   return (
@@ -436,14 +448,24 @@ export function CampaignWizard({
           <div className="space-y-4">
             <div>
               <h2 className="text-lg font-semibold text-slate-900 dark:text-slate-50">
-                Fill in the blanks
+                {template.headerMediaType
+                  ? "Image and blanks"
+                  : "Fill in the blanks"}
               </h2>
               <p className="mt-0.5 text-sm text-slate-500 dark:text-slate-400">
-                {variableIndexes.length === 0
+                {variableIndexes.length === 0 && !template.headerMediaType
                   ? "This template has no blanks to fill."
                   : "Choose where each value comes from."}
               </p>
             </div>
+
+            {template.headerMediaType && (
+              <MediaUpload
+                mediaType={template.headerMediaType}
+                value={headerMediaUrl}
+                onChange={setHeaderMediaUrl}
+              />
+            )}
 
             <div className="rounded-lg bg-slate-50 p-3 text-sm dark:bg-slate-800/50">
               <p className="whitespace-pre-wrap text-slate-700 dark:text-slate-300">

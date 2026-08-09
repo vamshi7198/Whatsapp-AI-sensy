@@ -66,9 +66,12 @@ export const NAV_ITEMS: NavItem[] = [
     permission: "report:view",
   },
   {
+    // Gated on settings:business rather than settings:view: a manager can
+    // edit the business profile and their own password, so hiding Settings
+    // entirely would strand them.
     label: "Settings",
     href: "/settings",
     icon: "Settings",
-    permission: "settings:view",
+    permission: "settings:business",
   },
 ];

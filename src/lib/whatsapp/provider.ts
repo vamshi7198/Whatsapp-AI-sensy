@@ -1,6 +1,8 @@
 import type {
   BusinessAccountProfile,
+  BusinessProfile,
   CreateTemplateInput,
+  MediaUploadResult,
   NormalisedWebhookEvent,
   Paginated,
   PhoneNumberProfile,
@@ -9,6 +11,7 @@ import type {
   SendResult,
   SendTemplateInput,
   SendTextInput,
+  UpdateBusinessProfileInput,
 } from "./types";
 
 /**
@@ -36,6 +39,29 @@ export interface WhatsAppProvider {
 
   getPhoneNumber(): Promise<PhoneNumberProfile | null>;
   getBusinessAccount(): Promise<BusinessAccountProfile | null>;
+
+  /** The public profile customers see when they tap the business name. */
+  getBusinessProfile(): Promise<BusinessProfile | null>;
+  updateBusinessProfile(input: UpdateBusinessProfileInput): Promise<boolean>;
+
+  /**
+   * Uploads an image for use as the profile picture.
+   *
+   * Uses the resumable upload API, which returns a file handle — a different
+   * thing from the media id used when sending a message, and not
+   * interchangeable with it.
+   */
+  uploadProfilePicture(
+    bytes: Buffer,
+    mimeType: string,
+  ): Promise<string | null>;
+
+  /** Uploads media for sending in a message. Returns a media id. */
+  uploadMedia(
+    bytes: Buffer,
+    mimeType: string,
+    filename: string,
+  ): Promise<MediaUploadResult | null>;
 
   /** Verifies a webhook signature over the raw request bytes. */
   verifyWebhookSignature(rawBody: Buffer, signatureHeader: string): boolean;

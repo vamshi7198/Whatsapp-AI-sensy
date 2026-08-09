@@ -66,6 +66,8 @@ export async function sendCampaignBatch(
       templateName: true,
       templateLanguage: true,
       templateId: true,
+      headerMediaUrl: true,
+      headerMediaType: true,
     },
   });
 
@@ -168,6 +170,19 @@ export async function sendCampaignBatch(
       templateName: campaign.templateName,
       languageCode: campaign.templateLanguage,
       bodyVariables: recipient.variables as Record<string, string>,
+      // Sent as a link rather than an uploaded id, so a campaign repeated
+      // weeks later still works after Meta has expired uploaded media.
+      ...(campaign.headerMediaUrl && campaign.headerMediaType
+        ? {
+            headerMedia: {
+              type: campaign.headerMediaType as
+                | "image"
+                | "video"
+                | "document",
+              link: campaign.headerMediaUrl,
+            },
+          }
+        : {}),
     });
 
     if (sendResult.accepted === true) {

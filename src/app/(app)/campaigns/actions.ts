@@ -375,6 +375,9 @@ export async function sendCampaign(
       audience,
       mapping,
       createdById: user.id,
+      headerMediaUrl: String(formData.get("headerMediaUrl") ?? "") || undefined,
+      headerMediaType:
+        String(formData.get("headerMediaType") ?? "") || undefined,
     });
 
     if (!result.ok || !result.campaignId) {

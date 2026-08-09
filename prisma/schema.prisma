@@ -310,6 +310,13 @@ model Campaign {
   audienceFilter  Json
   variableMapping Json
 
+  /// Image, video or document for a template whose header is media.
+  /// Stored as a public URL rather than an uploaded media id: Meta expires
+  /// uploaded media after about a week, which would silently break a repeat
+  /// of the same campaign.
+  headerMediaUrl  String?
+  headerMediaType String?
+
   scheduledAt DateTime?
   timezone    String    @default("Asia/Kolkata")
   startedAt   DateTime?

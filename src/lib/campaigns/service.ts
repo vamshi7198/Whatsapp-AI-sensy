@@ -2,6 +2,7 @@ import type { Prisma } from "@prisma/client";
 
 import { prisma } from "../db";
 import { moduleLogger } from "../logger";
+import { getTemplateHeaderMediaType } from "../templates/service";
 import {
   resolveAudience,
   resolveVariables,
@@ -27,6 +28,9 @@ export interface CreateCampaignInput {
   audience: AudienceFilter;
   mapping: VariableMapping;
   createdById: string;
+  /** Required when the template's header is an image, video or document. */
+  headerMediaUrl?: string;
+  headerMediaType?: string;
 }
 
 export interface CreateCampaignResult {
@@ -65,6 +69,17 @@ export async function createCampaign(
       ok: false,
       error:
         "That template is not approved by WhatsApp, so it cannot be sent.",
+    };
+  }
+
+  // A media-header template without a file is rejected by Meta for every
+  // recipient. Refusing here turns that into one clear message instead of a
+  // campaign that fails entirely.
+  const requiredMedia = getTemplateHeaderMediaType(template.components);
+  if (requiredMedia && !input.headerMediaUrl) {
+    return {
+      ok: false,
+      error: `This template needs ${requiredMedia === "image" ? "an image" : `a ${requiredMedia}`} at the top. Upload one and try again.`,
     };
   }
 
@@ -149,6 +164,8 @@ export async function createCampaign(
       audienceType: input.audience.type,
       audienceFilter: input.audience as unknown as Prisma.InputJsonValue,
       variableMapping: input.mapping as unknown as Prisma.InputJsonValue,
+      headerMediaUrl: input.headerMediaUrl,
+      headerMediaType: requiredMedia ?? input.headerMediaType,
       totalRecipients: sendable,
       skippedCount,
       createdById: input.createdById,

@@ -57,6 +57,17 @@ export interface SendTemplateInput {
   languageCode: string;
   bodyVariables?: TemplateVariables;
   headerVariables?: TemplateVariables;
+  /**
+   * Image, video or document for a template whose header is media.
+   * A link is preferred over an uploaded id: Meta expires uploaded media
+   * after about a week, which would silently break a reusable template.
+   */
+  headerMedia?: {
+    type: "image" | "video" | "document";
+    link?: string;
+    id?: string;
+    filename?: string;
+  };
   /** Correlates the send with our own record across retries. */
   idempotencyKey?: string;
 }
@@ -124,6 +135,43 @@ export interface BusinessAccountProfile {
   name: string;
   timezoneId?: string;
   messageTemplateNamespace?: string;
+}
+
+/**
+ * The public profile customers see when they tap the business name.
+ *
+ * The display name is deliberately absent: it cannot be changed through the
+ * API, only in WhatsApp Manager, and pretending otherwise would produce a
+ * field that silently does nothing.
+ */
+export interface BusinessProfile {
+  /** Short status line, max 139 characters. */
+  about?: string;
+  description?: string;
+  address?: string;
+  email?: string;
+  /** Up to two, each max 256 characters. */
+  websites?: string[];
+  /** Meta's industry categories, e.g. RETAIL, RESTAURANT. */
+  vertical?: string;
+  profilePictureUrl?: string;
+}
+
+export interface UpdateBusinessProfileInput {
+  about?: string;
+  description?: string;
+  address?: string;
+  email?: string;
+  websites?: string[];
+  vertical?: string;
+  /** From the resumable upload API, not the media API. */
+  profilePictureHandle?: string;
+}
+
+/** Result of uploading media for use in a message. */
+export interface MediaUploadResult {
+  /** Media ID, usable in a send for about a week. */
+  id: string;
 }
 
 export type NormalisedWebhookEvent =
