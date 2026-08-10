@@ -1,3 +1,5 @@
+import Link from "next/link";
+
 import { requireAuth } from "@/lib/auth/guards";
 import {
   getConversation,
@@ -5,6 +7,7 @@ import {
   listConversations,
 } from "@/lib/inbox/service";
 import { isMetaConnected } from "@/lib/settings";
+import { cn } from "@/lib/utils";
 
 import { ConversationList } from "./_components/conversation-list";
 import { ConversationThread } from "./_components/conversation-thread";
@@ -28,6 +31,14 @@ export default async function InboxPage({
     listConversations({ search, unreadOnly }),
     isMetaConnected(),
   ]);
+
+  // Back to the list on mobile, keeping whatever search or filter was applied
+  // so closing a conversation does not undo the user's place.
+  const backParams = new URLSearchParams();
+  if (search) backParams.set("q", search);
+  if (unreadOnly) backParams.set("unread", "1");
+  const backQuery = backParams.toString();
+  const backHref = backQuery ? `/inbox?${backQuery}` : "/inbox";
 
   const selected = selectedId ? await getConversation(selectedId) : null;
   const window = selected
@@ -60,15 +71,37 @@ export default async function InboxPage({
         </div>
       )}
 
+      {/*
+        On a phone there is not room for the list and the thread at once, so it
+        behaves the way WhatsApp does: the list fills the screen, and opening a
+        conversation replaces it. On a laptop both are visible side by side.
+      */}
       <div className="grid gap-0 overflow-hidden rounded-xl border border-slate-200 bg-white lg:grid-cols-[320px_1fr] dark:border-slate-800 dark:bg-slate-900">
-        <ConversationList
-          conversations={conversations}
-          selectedId={selectedId}
-          search={search}
-          unreadOnly={unreadOnly}
-        />
+        <div className={selected ? "hidden lg:block" : "block"}>
+          <ConversationList
+            conversations={conversations}
+            selectedId={selectedId}
+            search={search}
+            unreadOnly={unreadOnly}
+          />
+        </div>
 
-        <div className="min-h-125 border-t border-slate-200 lg:border-t-0 lg:border-l dark:border-slate-800">
+        <div
+          className={cn(
+            "min-h-125 border-slate-200 lg:block lg:border-t-0 lg:border-l dark:border-slate-800",
+            selected ? "block" : "hidden border-t",
+          )}
+        >
+          {selected && (
+            <Link
+              href={backHref}
+              className="flex items-center gap-1.5 border-b border-slate-200 px-3 py-2.5 text-sm font-medium text-slate-600 lg:hidden dark:border-slate-800 dark:text-slate-300"
+            >
+              <span aria-hidden="true">←</span>
+              All conversations
+            </Link>
+          )}
+
           {selected && window ? (
             <ConversationThread
               conversation={{
