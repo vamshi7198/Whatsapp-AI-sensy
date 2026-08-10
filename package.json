@@ -12,6 +12,7 @@
     "test:watch": "vitest",
     "format": "prettier --write \"src/**/*.{ts,tsx,css}\" \"prisma/**/*.ts\"",
     "recover": "tsx scripts/recover-webhooks.ts",
+    "scheduler": "tsx scripts/run-scheduler.ts",
     "worker": "tsx watch src/worker/index.ts",
     "worker:start": "tsx src/worker/index.ts",
     "db:up": "docker compose up -d",

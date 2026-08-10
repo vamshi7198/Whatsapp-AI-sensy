@@ -1,9 +1,10 @@
 import type { TemplateCategory } from "@prisma/client";
 
 import { prisma } from "../db";
+import { moduleLogger } from "../logger";
 
 /**
- * Cost estimation for a campaign.
+ * What messages cost.
  *
  * Rates live in the database, never in code, so a Meta price change is a
  * settings edit rather than a deployment. Rates are versioned by
@@ -11,9 +12,20 @@ import { prisma } from "../db";
  * of past campaigns.
  *
  * Since 1 July 2025 Meta bills per delivered message by category and market.
- * Service messages — replies inside the 24-hour customer service window — are
- * free, which is why the inbox costs nothing to run.
+ * Meta reports which category it billed under, but never an amount — no
+ * webhook and no Graph API endpoint returns a currency figure. So spend is
+ * always Meta's count multiplied by our own rate table, and the rates have to
+ * be kept matching the invoice for the totals to be right.
+ *
+ * Two dates worth knowing, both from Meta:
+ *  - Rates only change on quarter boundaries (1 Jan / Apr / Jul / Oct).
+ *  - From 1 October 2026 Meta begins charging for service messages — inbox
+ *    replies inside the 24-hour window — and for utility templates sent
+ *    inside an open window. Both are free before then. Until Meta publishes
+ *    those rates, such messages are reported as unpriced rather than guessed.
  */
+
+const log = moduleLogger("pricing");
 
 export interface CostEstimate {
   /** Null when no rate is configured, so the UI can say so rather than
@@ -51,6 +63,10 @@ async function findRate(
 
   const where = {
     category,
+    // Flat rate only. Without this, adding a volume-tier row later would make
+    // a single message pick up the high-volume price, because the ordering
+    // below cannot tell the two kinds of row apart.
+    tierMinVolume: null,
     effectiveFrom: { lte: now },
     OR: [{ effectiveTo: null }, { effectiveTo: { gte: now } }],
   };
@@ -133,25 +149,46 @@ export async function estimateCampaignCost(
 /* -------------------------------------------------------------------------- */
 
 /**
- * Maps Meta's billing category to ours.
+ * What Meta's billing category means for us.
  *
- * Meta reports how it actually billed a message, which is not always the
- * template's own category — it re-categorises in some cases, and that is the
- * number that reaches the invoice. Returning null means Meta charged nothing:
- * a service reply inside the 24-hour window, or a free-tier message.
+ * "free" and "unknown" are deliberately different. Free is a fact — Meta said
+ * it charged nothing. Unknown means Meta used a category we do not have a rate
+ * for, and recording that as free would quietly understate the bill with
+ * nothing on screen to say so.
  */
-function metaCategoryToOurs(category: string | null): TemplateCategory | null {
+type BillingOutcome =
+  | { kind: "charged"; category: TemplateCategory }
+  | { kind: "free" }
+  | { kind: "unknown" };
+
+function metaCategoryToOurs(category: string | null): BillingOutcome {
   switch (category?.toLowerCase()) {
     case "marketing":
-      return "MARKETING";
+      return { kind: "charged", category: "MARKETING" };
     case "utility":
-      return "UTILITY";
+      return { kind: "charged", category: "UTILITY" };
     case "authentication":
+    // Meta's own reference spells this with a hyphen under pricing.category
+    // and with an underscore under conversation.origin.type. Both are matched
+    // because missing one would silently record the message as free.
+    case "authentication-international":
     case "authentication_international":
-      return "AUTHENTICATION";
-    // "service" and "referral_conversion" are not charged.
+      return { kind: "charged", category: "AUTHENTICATION" };
+
+    // Referral conversions are not charged.
+    case "referral_conversion":
+      return { kind: "free" };
+
+    // Service replies — the inbox — are free while Meta says so, and Meta says
+    // so per message via the billable flag, which is checked before this runs.
+    // Meta begins charging for them on 1 October 2026, and reaching here with
+    // billable set means that has happened. Reported as unpriced rather than
+    // guessed at, so the spend page says the total is short instead of being
+    // quietly wrong.
+    case "service":
+    case "marketing_lite":
     default:
-      return null;
+      return { kind: "unknown" };
   }
 }
 
@@ -197,18 +234,21 @@ export async function recordMessageCost(messageId: string): Promise<void> {
   }
 
   // Meta's own category first: it reflects how the message was actually
-  // billed. The campaign's template category is the fallback for a message
-  // whose webhook arrived without a pricing block.
-  const category =
-    metaCategoryToOurs(message.pricingCategory) ??
-    (message.pricingCategory
-      ? null
-      : (message.campaignRecipient?.campaign.templateCategory ?? null));
+  // billed, which is not always the template's own category.
+  const outcome: BillingOutcome = message.pricingCategory
+    ? metaCategoryToOurs(message.pricingCategory)
+    : // No pricing block at all. Fall back to what we sent, which is right
+      // for a campaign and unknowable for anything else.
+      message.campaignRecipient
+      ? {
+          kind: "charged",
+          category: message.campaignRecipient.campaign.templateCategory,
+        }
+      : { kind: "unknown" };
 
-  if (category === null) {
-    // A free message — a service reply inside the 24-hour window. Recorded as
-    // zero rather than left blank, so "not yet costed" stays distinguishable
-    // from "cost nothing".
+  if (outcome.kind === "free") {
+    // Recorded as zero rather than left blank, so "cost nothing" stays
+    // distinguishable from "not yet costed".
     await prisma.message.update({
       where: { id: messageId },
       data: { estimatedCost: 0 },
@@ -216,11 +256,24 @@ export async function recordMessageCost(messageId: string): Promise<void> {
     return;
   }
 
-  const rate = await findRate(countryFromPhone(message.contact.phoneE164), category);
+  // A category we have no rate for. Left unpriced deliberately — a zero here
+  // would understate the bill with nothing on screen to say so, and the spend
+  // page counts these and says the total is short.
+  if (outcome.kind === "unknown") {
+    log.warn(
+      { messageId, category: message.pricingCategory },
+      "WhatsApp billed a category we have no rate for — left unpriced",
+    );
+    return;
+  }
 
-  // No rate configured for this country and category. Left null deliberately:
-  // a zero here would quietly understate the bill, and the spend page says
-  // how many messages it could not price.
+  const rate = await findRate(
+    countryFromPhone(message.contact.phoneE164),
+    outcome.category,
+  );
+
+  // No rate configured for this country and category — also left unpriced,
+  // for the same reason.
   if (!rate) return;
 
   await prisma.$transaction([

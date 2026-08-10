@@ -639,7 +639,7 @@ model PricingRate {
   /// ISO-3166 alpha-2, or "*" for the fallback rate.
   countryCode    String
   category       TemplateCategory
-  currency       String           @default("USD")
+  currency       String           @default("INR")
   ratePerMessage Decimal          @db.Decimal(12, 6)
   /// Volume band floor for utility/authentication discounts; null = flat rate.
   tierMinVolume  Int?

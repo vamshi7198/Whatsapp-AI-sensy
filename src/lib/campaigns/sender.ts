@@ -373,6 +373,77 @@ export async function runCampaign(campaignId: string): Promise<void> {
   }
 }
 
+export interface DueCampaign {
+  campaignId: string;
+  name: string;
+  scheduledAt: Date;
+  recipients: number;
+}
+
+/**
+ * Starts campaigns whose scheduled time has arrived.
+ *
+ * Called from a task that runs every few minutes, not from a timer inside the
+ * web process — a timer dies with the process, so a campaign scheduled for
+ * 9am would silently never send if the machine restarted overnight.
+ *
+ * A campaign whose time passed while the machine was off is still sent, late,
+ * rather than skipped. Late is recoverable; silently never sending is not.
+ */
+export async function runDueCampaigns(): Promise<DueCampaign[]> {
+  const now = new Date();
+
+  const due = await prisma.campaign.findMany({
+    where: { status: "SCHEDULED", scheduledAt: { lte: now } },
+    orderBy: { scheduledAt: "asc" },
+    select: { id: true, name: true, scheduledAt: true },
+  });
+
+  const started: DueCampaign[] = [];
+
+  for (const campaign of due) {
+    // Claim it before sending. updateMany with the status in the WHERE is what
+    // makes this safe if two schedulers overlap: only one update matches, so
+    // only one of them starts the campaign.
+    const claimed = await prisma.campaign.updateMany({
+      where: { id: campaign.id, status: "SCHEDULED" },
+      data: { status: "QUEUED" },
+    });
+
+    if (claimed.count === 0) {
+      log.info(
+        { campaignId: campaign.id },
+        "Scheduled campaign was already started elsewhere",
+      );
+      continue;
+    }
+
+    const recipients = await prisma.campaignRecipient.count({
+      where: { campaignId: campaign.id, status: "PENDING" },
+    });
+
+    log.info(
+      {
+        campaignId: campaign.id,
+        scheduledFor: campaign.scheduledAt,
+        recipients,
+      },
+      "Starting a scheduled campaign",
+    );
+
+    started.push({
+      campaignId: campaign.id,
+      name: campaign.name,
+      scheduledAt: campaign.scheduledAt ?? now,
+      recipients,
+    });
+
+    await runCampaign(campaign.id);
+  }
+
+  return started;
+}
+
 export interface ResumeResult {
   campaignId: string;
   name: string;

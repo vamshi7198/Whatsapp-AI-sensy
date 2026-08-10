@@ -34,6 +34,8 @@ export interface CreateCampaignInput {
   /** Required when the template's header is an image, video or document. */
   headerMediaUrl?: string;
   headerMediaType?: string;
+  /** Send later instead of now. Interpreted in Asia/Kolkata. */
+  scheduledAt?: Date;
 }
 
 export interface CreateCampaignResult {
@@ -159,7 +161,9 @@ export async function createCampaign(
     data: {
       name: input.name,
       idempotencyKey: input.idempotencyKey,
-      status: "QUEUED",
+      // SCHEDULED is left alone by the sender until its time arrives.
+      status: input.scheduledAt ? "SCHEDULED" : "QUEUED",
+      scheduledAt: input.scheduledAt,
       templateId: template.id,
       templateName: template.name,
       templateLanguage: template.language,

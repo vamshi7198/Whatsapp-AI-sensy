@@ -166,6 +166,21 @@ export default async function CampaignReportPage({
         </div>
       </div>
 
+      {campaign.status === "SCHEDULED" && campaign.scheduledAt && (
+        <div className="rounded-xl border border-blue-200 bg-blue-50 p-4 dark:border-blue-900 dark:bg-blue-950">
+          <p className="text-sm font-medium text-blue-900 dark:text-blue-200">
+            Scheduled for {formatDateTime(campaign.scheduledAt)}
+          </p>
+          <p className="mt-1 text-sm text-blue-800 dark:text-blue-300">
+            Nothing has been sent yet. You can still stop it until then.
+          </p>
+          <p className="mt-1 text-xs text-blue-700 dark:text-blue-400">
+            If this computer is switched off at that time, the campaign sends
+            when it next starts up rather than being missed.
+          </p>
+        </div>
+      )}
+
       {inFlight && (
         <div className="rounded-xl border border-blue-200 bg-blue-50 p-4 dark:border-blue-900 dark:bg-blue-950">
           <p className="text-sm text-blue-900 dark:text-blue-200">

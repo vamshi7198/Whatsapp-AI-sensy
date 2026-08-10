@@ -126,6 +126,9 @@ export function CampaignWizard({
     [],
   );
   const [headerMediaUrl, setHeaderMediaUrl] = useState<string | null>(null);
+  const [sendMode, setSendMode] = useState<"now" | "later">("now");
+  const [scheduledDate, setScheduledDate] = useState("");
+  const [scheduledTime, setScheduledTime] = useState("10:00");
 
   const template = templates.find((t) => t.id === templateId);
   const variableIndexes = template
@@ -157,6 +160,12 @@ export function CampaignWizard({
     if (headerMediaUrl && template?.headerMediaType) {
       formData.set("headerMediaUrl", headerMediaUrl);
       formData.set("headerMediaType", template.headerMediaType);
+    }
+
+    formData.set("sendMode", sendMode);
+    if (sendMode === "later") {
+      formData.set("scheduledDate", scheduledDate);
+      formData.set("scheduledTime", scheduledTime);
     }
 
     startTransition(async () => {
@@ -702,6 +711,62 @@ export function CampaignWizard({
               </p>
             )}
 
+            {/* ---------- When to send ---------- */}
+            <div className="rounded-lg border border-slate-200 p-3 dark:border-slate-700">
+              <p className="text-sm font-medium text-slate-900 dark:text-slate-100">
+                When should this go out?
+              </p>
+
+              <div className="mt-2 flex gap-2">
+                {(
+                  [
+                    ["now", "Send now"],
+                    ["later", "Send later"],
+                  ] as const
+                ).map(([value, label]) => (
+                  <button
+                    key={value}
+                    type="button"
+                    onClick={() => setSendMode(value)}
+                    className={`rounded-lg border px-3 py-1.5 text-sm transition ${
+                      sendMode === value
+                        ? "border-emerald-500 bg-emerald-50 font-medium text-emerald-900 dark:bg-emerald-950 dark:text-emerald-200"
+                        : "border-slate-300 text-slate-600 hover:bg-slate-50 dark:border-slate-600 dark:text-slate-400 dark:hover:bg-slate-800"
+                    }`}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+
+              {sendMode === "later" && (
+                <div className="mt-3 space-y-2">
+                  <div className="flex flex-wrap gap-2">
+                    <Input
+                      type="date"
+                      value={scheduledDate}
+                      onChange={(e) => setScheduledDate(e.target.value)}
+                      aria-label="Date to send"
+                      className="w-auto"
+                    />
+                    <Input
+                      type="time"
+                      value={scheduledTime}
+                      onChange={(e) => setScheduledTime(e.target.value)}
+                      aria-label="Time to send"
+                      className="w-auto"
+                    />
+                  </div>
+                  <p className="text-xs text-slate-500 dark:text-slate-400">
+                    India time. The campaign is checked every few minutes, so it
+                    may go out a moment after the time you choose. If the
+                    computer is off at that time, it sends when it next starts
+                    up rather than being missed.
+                  </p>
+                </div>
+              )}
+            </div>
+
             <label className="flex items-start gap-2.5 rounded-lg border border-slate-300 p-3 dark:border-slate-600">
               <input
                 type="checkbox"
@@ -744,14 +809,26 @@ export function CampaignWizard({
           {step === 6 && (
             <Button
               onClick={submit}
-              disabled={!confirmed || isPending}
+              disabled={
+                !confirmed ||
+                isPending ||
+                (sendMode === "later" && !scheduledDate)
+              }
               title={
-                !confirmed ? "Tick the confirmation box first" : undefined
+                !confirmed
+                  ? "Tick the confirmation box first"
+                  : sendMode === "later" && !scheduledDate
+                    ? "Choose the date to send"
+                    : undefined
               }
             >
               {isPending
-                ? "Sending…"
-                : `Send to ${formatNumber(preview.eligible ?? 0)} people`}
+                ? sendMode === "later"
+                  ? "Scheduling…"
+                  : "Sending…"
+                : sendMode === "later"
+                  ? `Schedule for ${formatNumber(preview.eligible ?? 0)} people`
+                  : `Send to ${formatNumber(preview.eligible ?? 0)} people`}
             </Button>
           )}
         </div>

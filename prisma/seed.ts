@@ -35,13 +35,29 @@ const DEFAULT_TAGS = [
  * corrected in Settings against your actual Meta invoices. They are seeded so
  * cost estimation has something to read, not because they are authoritative.
  */
+/**
+ * Starting message rates, in rupees.
+ *
+ * Meta bills Indian accounts in INR directly, so these are INR — not dollars
+ * converted at some rate nobody recorded.
+ *
+ * These are a STARTING POINT, not gospel. Meta does not publish a machine-
+ * readable rate card and does not report amounts through the API, so these
+ * came from secondary sources and carry a note saying so. The first thing to
+ * do with a real Meta invoice is correct them under Settings, after which
+ * every cost figure in the app matches the bill exactly.
+ *
+ * Meta changes rates only on quarter boundaries (1 Jan / Apr / Jul / Oct).
+ */
+const UNVERIFIED = "Starting estimate — replace with the rate on your Meta invoice.";
+
 const DEFAULT_PRICING = [
-  { countryCode: "IN", category: "MARKETING" as const, ratePerMessage: "0.0099" },
-  { countryCode: "IN", category: "UTILITY" as const, ratePerMessage: "0.0040" },
-  { countryCode: "IN", category: "AUTHENTICATION" as const, ratePerMessage: "0.0035" },
-  { countryCode: "*", category: "MARKETING" as const, ratePerMessage: "0.0250" },
-  { countryCode: "*", category: "UTILITY" as const, ratePerMessage: "0.0100" },
-  { countryCode: "*", category: "AUTHENTICATION" as const, ratePerMessage: "0.0100" },
+  { countryCode: "IN", category: "MARKETING" as const, ratePerMessage: "0.8631" },
+  { countryCode: "IN", category: "UTILITY" as const, ratePerMessage: "0.1150" },
+  { countryCode: "IN", category: "AUTHENTICATION" as const, ratePerMessage: "0.1150" },
+  { countryCode: "*", category: "MARKETING" as const, ratePerMessage: "2.1000" },
+  { countryCode: "*", category: "UTILITY" as const, ratePerMessage: "0.8500" },
+  { countryCode: "*", category: "AUTHENTICATION" as const, ratePerMessage: "0.8500" },
 ];
 
 const DEFAULT_SETTINGS: Array<{ key: string; value: string }> = [
@@ -53,7 +69,8 @@ const DEFAULT_SETTINGS: Array<{ key: string; value: string }> = [
   { key: "campaign.large_threshold", value: "500" },
   { key: "campaign.default_timezone", value: "Asia/Kolkata" },
   { key: "meta.api_version", value: "v23.0" },
-  { key: "pricing.currency", value: "USD" },
+  // Meta bills Indian accounts in rupees directly.
+  { key: "pricing.currency", value: "INR" },
 ];
 
 async function seedAdmin() {
@@ -120,9 +137,9 @@ async function seedPricing() {
       data: {
         countryCode: rate.countryCode,
         category: rate.category,
-        currency: "USD",
+        currency: "INR",
         ratePerMessage: rate.ratePerMessage,
-        note: "Seeded starting value — verify against your Meta invoices.",
+        note: UNVERIFIED,
       },
     });
   }

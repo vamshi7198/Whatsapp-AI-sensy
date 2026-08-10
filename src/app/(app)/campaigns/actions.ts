@@ -325,6 +325,49 @@ export interface SendState {
   error?: string;
   campaignId?: string;
   started?: boolean;
+  /** Set when the campaign was scheduled rather than sent now. */
+  scheduledFor?: string;
+}
+
+/**
+ * Reads the "send later" fields from the form.
+ *
+ * The browser gives a wall-clock date and time with no timezone, and the
+ * operator means India time. Building the instant explicitly avoids depending
+ * on the server's own timezone, which is a setting nobody remembers to check.
+ */
+function parseSchedule(formData: FormData):
+  | { at: Date }
+  | { error: string }
+  | null {
+  if (formData.get("sendMode") !== "later") return null;
+
+  const date = String(formData.get("scheduledDate") ?? "").trim();
+  const time = String(formData.get("scheduledTime") ?? "").trim();
+
+  if (!date || !time) {
+    return { error: "Choose the date and time to send." };
+  }
+
+  // IST is UTC+5:30 and has no daylight saving, so a fixed offset is correct
+  // rather than a convenient approximation.
+  const at = new Date(`${date}T${time}:00+05:30`);
+
+  if (Number.isNaN(at.getTime())) {
+    return { error: "That date and time could not be read. Please re-enter it." };
+  }
+
+  // A minute of slack: a form submitted at the chosen minute should schedule,
+  // not be rejected for being a few seconds late.
+  if (at.getTime() < Date.now() - 60_000) {
+    return { error: "That time has already passed. Choose a time in the future." };
+  }
+
+  if (at.getTime() > Date.now() + 365 * 24 * 60 * 60 * 1000) {
+    return { error: "Campaigns can be scheduled up to a year ahead." };
+  }
+
+  return { at };
 }
 
 const sendSchema = z.object({
@@ -369,6 +412,9 @@ export async function sendCampaign(
       String(formData.get("mapping") ?? "{}"),
     ) as VariableMapping;
 
+    const schedule = parseSchedule(formData);
+    if (schedule && "error" in schedule) return { error: schedule.error };
+
     const result = await createCampaign({
       name: parsed.data.name,
       idempotencyKey: parsed.data.idempotencyKey,
@@ -379,6 +425,7 @@ export async function sendCampaign(
       headerMediaUrl: String(formData.get("headerMediaUrl") ?? "") || undefined,
       headerMediaType:
         String(formData.get("headerMediaType") ?? "") || undefined,
+      scheduledAt: schedule?.at,
     });
 
     if (!result.ok || !result.campaignId) {
@@ -390,16 +437,31 @@ export async function sendCampaign(
       return { campaignId: result.campaignId, started: false };
     }
 
-    await audit(user, "campaign.send", {
+    await audit(user, schedule ? "campaign.schedule" : "campaign.send", {
       entityType: "Campaign",
       entityId: result.campaignId,
-      metadata: { name: parsed.data.name, template: parsed.data.templateId },
+      metadata: {
+        name: parsed.data.name,
+        template: parsed.data.templateId,
+        ...(schedule ? { scheduledAt: schedule.at.toISOString() } : {}),
+      },
     });
+
+    revalidatePath("/campaigns");
+
+    // A scheduled campaign is deliberately NOT started here — the scheduler
+    // picks it up when its time arrives.
+    if (schedule) {
+      return {
+        campaignId: result.campaignId,
+        started: false,
+        scheduledFor: schedule.at.toISOString(),
+      };
+    }
 
     // Fire and forget: the campaign continues after this response returns.
     void runCampaign(result.campaignId).catch(() => undefined);
 
-    revalidatePath("/campaigns");
     return { campaignId: result.campaignId, started: true };
   } catch (error) {
     if (error instanceof ForbiddenError) {
