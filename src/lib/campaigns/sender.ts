@@ -372,3 +372,79 @@ export async function runCampaign(campaignId: string): Promise<void> {
     if (result.attempted === 0) return;
   }
 }
+
+export interface ResumeResult {
+  campaignId: string;
+  name: string;
+  pending: number;
+}
+
+/**
+ * Restarts campaigns that were interrupted mid-send.
+ *
+ * Sending runs in the web process, so a restart — a crash, a deploy, or the
+ * machine being switched off — leaves a campaign marked RUNNING with
+ * recipients still PENDING and nothing left alive to send them. Without this
+ * they would sit there forever, looking like they were still working.
+ *
+ * Only campaigns that have gone quiet are touched. A campaign whose recipients
+ * were updated in the last few minutes is still being sent by a live process,
+ * and starting a second sender for it would attempt the same people twice.
+ */
+export async function resumeStalledCampaigns(
+  staleMinutes = 10,
+): Promise<ResumeResult[]> {
+  const cutoff = new Date(Date.now() - staleMinutes * 60_000);
+
+  const candidates = await prisma.campaign.findMany({
+    where: {
+      status: { in: ["QUEUED", "RUNNING"] },
+      updatedAt: { lt: cutoff },
+      recipients: { some: { status: "PENDING", attemptCount: { lt: MAX_ATTEMPTS } } },
+    },
+    select: { id: true, name: true },
+  });
+
+  const resumed: ResumeResult[] = [];
+
+  for (const campaign of candidates) {
+    // Re-read the recipients rather than trusting the campaign row: the count
+    // decides whether there is anything left worth starting a sender for.
+    const [pending, lastTouched] = await Promise.all([
+      prisma.campaignRecipient.count({
+        where: {
+          campaignId: campaign.id,
+          status: "PENDING",
+          attemptCount: { lt: MAX_ATTEMPTS },
+        },
+      }),
+      prisma.campaignRecipient.findFirst({
+        where: { campaignId: campaign.id },
+        orderBy: { updatedAt: "desc" },
+        select: { updatedAt: true },
+      }),
+    ]);
+
+    if (pending === 0) continue;
+
+    // A recipient updated seconds ago means a sender is alive and working
+    // through this campaign right now.
+    if (lastTouched && lastTouched.updatedAt > cutoff) {
+      log.info(
+        { campaignId: campaign.id },
+        "Campaign is still being sent — leaving it alone",
+      );
+      continue;
+    }
+
+    log.warn(
+      { campaignId: campaign.id, pending },
+      "Resuming a campaign that was interrupted",
+    );
+
+    resumed.push({ campaignId: campaign.id, name: campaign.name, pending });
+    await runCampaign(campaign.id);
+  }
+
+  return resumed;
+}

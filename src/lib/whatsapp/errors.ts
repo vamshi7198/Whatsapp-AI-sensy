@@ -248,6 +248,29 @@ export const LOCAL_ERRORS = {
 } as const satisfies Record<string, NormalisedError>;
 
 /**
+ * Classifies an error code read back from the database.
+ *
+ * Needed because classifyError stores the HTTP status AS the code when Meta
+ * returns no usable one, so a transient 500 is persisted as "500". Re-reading
+ * that later without the status would miss the catalogue and fall through to
+ * "not retryable", labelling a temporary outage as permanent.
+ *
+ * Meta's own codes are checked first, so a real code like 100 is never
+ * mistaken for an HTTP status.
+ */
+export function classifyStoredError(code: string | null | undefined): NormalisedError {
+  if (!code) {
+    return classifyError(undefined);
+  }
+
+  if (CATALOGUE[code]) return classifyError(code);
+
+  // Not a Meta code, but shaped like an HTTP status — that is what it is.
+  const asStatus = /^\d{3}$/.test(code) ? Number(code) : undefined;
+  return classifyError(code, undefined, asStatus);
+}
+
+/**
  * Classifies a provider error code.
  *
  * HTTP status is used as a fallback signal: 5xx and 429 are transient

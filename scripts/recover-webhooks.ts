@@ -1,29 +1,33 @@
 import "dotenv/config";
 
+import { resumeStalledCampaigns } from "../src/lib/campaigns/sender";
 import { prisma } from "../src/lib/db";
 import { recoverUnprocessedEvents } from "../src/lib/webhooks/processor";
 
 /**
- * Applies webhook events that were received and stored but never acted on.
+ * Picks up work the app was in the middle of when it last stopped.
  *
- * The webhook route writes the raw payload to the database before it answers
- * Meta, then applies it a moment later. If the machine loses power in that
- * gap, the payload survives but the message never reaches the inbox. This
- * closes that gap.
+ * Two things can be left half-done by a restart:
  *
- * Runs on every deploy and restart (see deploy/update.ps1). It is safe to run
- * at any time and safe to run twice — applying an event again lands on the
- * same result.
+ *  1. A webhook whose payload was stored but never applied. The route writes
+ *     the raw event before answering Meta, so the message survives, but it
+ *     would not reach the inbox on its own.
+ *
+ *  2. A campaign that was still sending. Sending runs inside the web process,
+ *     so a restart leaves the campaign marked RUNNING with recipients still
+ *     waiting and nothing alive to send them.
+ *
+ * Runs on every deploy and restart (see deploy/update.ps1). Safe to run at any
+ * time and safe to run twice.
  */
 
-async function main() {
+async function recoverMessages() {
   const pendingBefore = await prisma.webhookEvent.count({
     where: { status: { in: ["RECEIVED", "PROCESSING"] } },
   });
 
   if (pendingBefore === 0) {
-    console.log("No unprocessed messages. Nothing to recover.");
-    await prisma.$disconnect();
+    console.log("Messages:  nothing waiting.");
     return;
   }
 
@@ -63,6 +67,32 @@ async function main() {
       "Meta stops retrying after 7 days. Investigate these before then.",
     );
   }
+}
+
+async function resumeCampaigns() {
+  // Only campaigns that have gone quiet are restarted, so running this while
+  // one is genuinely mid-send does not start a second sender for it.
+  const resumed = await resumeStalledCampaigns();
+
+  if (resumed.length === 0) {
+    console.log("Campaigns: none were interrupted.");
+    return;
+  }
+
+  console.log(
+    `Campaigns: restarted ${resumed.length} that stopped part-way through.\n`,
+  );
+
+  for (const c of resumed) {
+    console.log(`  ${c.name} — ${c.pending} left to send`);
+  }
+}
+
+async function main() {
+  console.log("Checking for unfinished work\n");
+
+  await recoverMessages();
+  await resumeCampaigns();
 
   await prisma.$disconnect();
 }

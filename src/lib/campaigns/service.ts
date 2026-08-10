@@ -5,7 +5,7 @@ import { Prisma } from "@prisma/client";
 import { prisma } from "../db";
 import { moduleLogger } from "../logger";
 import { getTemplateHeaderMediaType } from "../templates/service";
-import { classifyError } from "../whatsapp/errors";
+import { classifyStoredError } from "../whatsapp/errors";
 import {
   resolveAudience,
   resolveVariables,
@@ -252,8 +252,10 @@ export async function getRetryPreview(campaignId: string): Promise<RetryPreview>
   let permanentCount = 0;
 
   for (const recipient of failed) {
+    // classifyStoredError, not classifyError: a code read back from the
+    // database may be an HTTP status Meta gave us instead of a real code.
     const code = recipient.message?.errorCode;
-    const permanent = code ? !classifyError(code).retryable : false;
+    const permanent = code ? !classifyStoredError(code).retryable : false;
     if (permanent) permanentCount += 1;
 
     const reason =
