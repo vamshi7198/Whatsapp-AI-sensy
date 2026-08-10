@@ -16,6 +16,7 @@ import { estimateCampaignCost } from "@/lib/campaigns/pricing";
 import {
   cancelCampaign,
   createCampaign,
+  createRetryCampaign,
 } from "@/lib/campaigns/service";
 import { runCampaign } from "@/lib/campaigns/sender";
 import { normalizePhone } from "@/lib/contacts/phone";
@@ -405,6 +406,62 @@ export async function sendCampaign(
       return { error: "You do not have permission to send campaigns." };
     }
     return { error: "The campaign could not be started. Please try again." };
+  }
+}
+
+export interface RetryState {
+  error?: string;
+  campaignId?: string;
+  sending?: number;
+}
+
+/**
+ * Starts a new campaign aimed at the people this one could not reach.
+ *
+ * Meta bills on delivery, so a failed message costs nothing — every failure is
+ * worth another attempt, whatever the reason. The compliance gate still runs
+ * at send time, so anyone who opted out since the first attempt is skipped.
+ */
+export async function retryFailedAction(
+  _prev: RetryState,
+  formData: FormData,
+): Promise<RetryState> {
+  try {
+    const user = await requireApiAuth("campaign:send");
+    const id = String(formData.get("id") ?? "");
+
+    const result = await createRetryCampaign(id, user.id);
+
+    if (!result.ok || !result.campaignId) {
+      return { error: result.error ?? "Could not start the resend." };
+    }
+
+    if (result.wasDuplicate) {
+      // An earlier click already created it — go there rather than send again.
+      return { campaignId: result.campaignId };
+    }
+
+    const sending = await prisma.campaignRecipient.count({
+      where: { campaignId: result.campaignId, status: "PENDING" },
+    });
+
+    await audit(user, "campaign.retry", {
+      entityType: "Campaign",
+      entityId: result.campaignId,
+      metadata: { retryOf: id, recipients: sending },
+    });
+
+    void runCampaign(result.campaignId).catch(() => undefined);
+
+    revalidatePath(`/campaigns/${id}`);
+    revalidatePath("/campaigns");
+
+    return { campaignId: result.campaignId, sending };
+  } catch (error) {
+    if (error instanceof ForbiddenError) {
+      return { error: "You do not have permission to send campaigns." };
+    }
+    return { error: "Could not start the resend. Please try again." };
   }
 }
 

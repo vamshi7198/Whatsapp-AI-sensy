@@ -7,6 +7,7 @@ import { requireAuth } from "@/lib/auth/guards";
 import {
   getCampaign,
   getCampaignRecipients,
+  getRetryPreview,
 } from "@/lib/campaigns/service";
 import { SKIP_REASON_LABELS } from "@/lib/campaigns/audience";
 import { formatPhoneForDisplay } from "@/lib/contacts/phone";
@@ -14,6 +15,7 @@ import { can } from "@/lib/rbac";
 import { formatNumber, formatPercent } from "@/lib/utils";
 
 import { CancelButton } from "./_cancel-button";
+import { RetryPanel } from "./_retry-panel";
 
 export const metadata = { title: "Campaign" };
 
@@ -104,6 +106,10 @@ export default async function CampaignReportPage({
     page,
   });
 
+  // Only worth loading once something has actually failed.
+  const retryPreview =
+    campaign.failedCount > 0 ? await getRetryPreview(id) : null;
+
   const status = STATUS[campaign.status] ?? {
     label: campaign.status,
     tone: "neutral" as const,
@@ -193,6 +199,24 @@ export default async function CampaignReportPage({
           sub={formatPercent(campaign.repliedCount, campaign.sentCount)}
         />
       </div>
+
+      {retryPreview && can(user, "campaign:send") && (
+        <RetryPanel campaignId={id} preview={retryPreview} />
+      )}
+
+      {campaign.retryOfCampaignId && (
+        <div className="rounded-xl border border-slate-200 bg-white p-4 dark:border-slate-800 dark:bg-slate-900">
+          <p className="text-sm text-slate-700 dark:text-slate-300">
+            This is a resend to the people another campaign could not reach.{" "}
+            <Link
+              href={`/campaigns/${campaign.retryOfCampaignId}`}
+              className="text-emerald-700 underline dark:text-emerald-400"
+            >
+              See the original
+            </Link>
+          </p>
+        </div>
+      )}
 
       {campaign.skippedCount > 0 && (
         <div className="rounded-xl border border-slate-200 bg-white p-4 dark:border-slate-800 dark:bg-slate-900">
