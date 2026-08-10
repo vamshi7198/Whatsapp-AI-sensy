@@ -46,6 +46,15 @@ const RECIPIENT_STATUS: Record<
   SKIPPED: { label: "Skipped", tone: "amber" },
 };
 
+/** Money, in the currency the rates were set in. */
+function money(amount: number, currency: string): string {
+  return new Intl.NumberFormat("en-IN", {
+    style: "currency",
+    currency,
+    maximumFractionDigits: 2,
+  }).format(amount);
+}
+
 function formatDateTime(value: Date | null): string {
   if (!value) return "—";
   return new Intl.DateTimeFormat("en-IN", {
@@ -199,6 +208,38 @@ export default async function CampaignReportPage({
           sub={formatPercent(campaign.repliedCount, campaign.sentCount)}
         />
       </div>
+
+      {/*
+        Only shown once WhatsApp has confirmed a delivery and priced it.
+        A confident zero before then would read as "this was free".
+      */}
+      {campaign.actualCost !== null && Number(campaign.actualCost) > 0 && (
+        <div className="rounded-xl border border-slate-200 bg-white p-4 dark:border-slate-800 dark:bg-slate-900">
+          <div className="flex flex-wrap items-baseline justify-between gap-2">
+            <div>
+              <p className="text-xs text-slate-500 dark:text-slate-400">
+                Cost of this campaign
+              </p>
+              <p className="mt-1 text-xl font-semibold tabular-nums text-slate-900 dark:text-slate-50">
+                {money(Number(campaign.actualCost), campaign.currency ?? "INR")}
+              </p>
+            </div>
+            <p className="text-xs text-slate-400">
+              {money(
+                Number(campaign.actualCost) / Math.max(campaign.deliveredCount, 1),
+                campaign.currency ?? "INR",
+              )}{" "}
+              per delivered message ·{" "}
+              <Link
+                href="/reports/spend"
+                className="text-emerald-700 underline dark:text-emerald-400"
+              >
+                All spending
+              </Link>
+            </p>
+          </div>
+        </div>
+      )}
 
       {retryPreview && can(user, "campaign:send") && (
         <RetryPanel campaignId={id} preview={retryPreview} />

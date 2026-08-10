@@ -163,6 +163,13 @@ export default async function ReportsPage({
             ))}
           </div>
 
+          <Link
+            href="/reports/spend"
+            className={buttonVariants({ variant: "secondary", size: "sm" })}
+          >
+            Money spent
+          </Link>
+
           {can(user, "report:export") && (
             <a
               href={`/api/reports/export?range=${preset}`}

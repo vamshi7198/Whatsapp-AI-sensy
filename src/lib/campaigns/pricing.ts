@@ -128,5 +128,119 @@ export async function estimateCampaignCost(
   };
 }
 
+/* -------------------------------------------------------------------------- */
+/* What a message actually cost                                                */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Maps Meta's billing category to ours.
+ *
+ * Meta reports how it actually billed a message, which is not always the
+ * template's own category — it re-categorises in some cases, and that is the
+ * number that reaches the invoice. Returning null means Meta charged nothing:
+ * a service reply inside the 24-hour window, or a free-tier message.
+ */
+function metaCategoryToOurs(category: string | null): TemplateCategory | null {
+  switch (category?.toLowerCase()) {
+    case "marketing":
+      return "MARKETING";
+    case "utility":
+      return "UTILITY";
+    case "authentication":
+    case "authentication_international":
+      return "AUTHENTICATION";
+    // "service" and "referral_conversion" are not charged.
+    default:
+      return null;
+  }
+}
+
+/**
+ * Works out and stores what one message cost, once WhatsApp has delivered it.
+ *
+ * Meta bills per message delivered, and the delivery webhook says which
+ * category it billed under — but never an amount. So the category comes from
+ * Meta and the rate comes from our own table, which is the most accurate
+ * figure obtainable through the API.
+ *
+ * Safe to call more than once: a message that already has a cost is left
+ * alone, so a replayed webhook cannot inflate the campaign total.
+ */
+export async function recordMessageCost(messageId: string): Promise<void> {
+  const message = await prisma.message.findUnique({
+    where: { id: messageId },
+    select: {
+      id: true,
+      estimatedCost: true,
+      pricingCategory: true,
+      billable: true,
+      contact: { select: { phoneE164: true } },
+      campaignRecipient: {
+        select: { campaignId: true, campaign: { select: { templateCategory: true } } },
+      },
+    },
+  });
+
+  if (!message) return;
+
+  // Already costed. Meta retries webhooks, so this is the guard that keeps a
+  // replay from being counted twice.
+  if (message.estimatedCost !== null) return;
+
+  // Meta said explicitly that it is not charging for this one.
+  if (message.billable === false) {
+    await prisma.message.update({
+      where: { id: messageId },
+      data: { estimatedCost: 0 },
+    });
+    return;
+  }
+
+  // Meta's own category first: it reflects how the message was actually
+  // billed. The campaign's template category is the fallback for a message
+  // whose webhook arrived without a pricing block.
+  const category =
+    metaCategoryToOurs(message.pricingCategory) ??
+    (message.pricingCategory
+      ? null
+      : (message.campaignRecipient?.campaign.templateCategory ?? null));
+
+  if (category === null) {
+    // A free message — a service reply inside the 24-hour window. Recorded as
+    // zero rather than left blank, so "not yet costed" stays distinguishable
+    // from "cost nothing".
+    await prisma.message.update({
+      where: { id: messageId },
+      data: { estimatedCost: 0 },
+    });
+    return;
+  }
+
+  const rate = await findRate(countryFromPhone(message.contact.phoneE164), category);
+
+  // No rate configured for this country and category. Left null deliberately:
+  // a zero here would quietly understate the bill, and the spend page says
+  // how many messages it could not price.
+  if (!rate) return;
+
+  await prisma.$transaction([
+    prisma.message.update({
+      where: { id: messageId },
+      data: { estimatedCost: rate.rate },
+    }),
+    ...(message.campaignRecipient
+      ? [
+          prisma.campaign.update({
+            where: { id: message.campaignRecipient.campaignId },
+            data: {
+              actualCost: { increment: rate.rate },
+              currency: rate.currency,
+            },
+          }),
+        ]
+      : []),
+  ]);
+}
+
 // formatCost lives in lib/utils.ts: this module imports Prisma, and a client
 // component importing it would pull the database client into the browser.

@@ -13,6 +13,7 @@ const SECTIONS: Array<{
   { label: "Business profile", href: "/settings/business", permission: "settings:business" },
   { label: "Team members", href: "/settings/users", permission: "settings:users" },
   { label: "Compliance", href: "/settings/compliance", permission: "settings:compliance" },
+  { label: "Message rates", href: "/settings/pricing", permission: "settings:pricing" },
   { label: "Activity log", href: "/settings/logs", permission: "logs:view" },
 ];
 

@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 
 import type { MessageStatus, Prisma } from "@prisma/client";
 
+import { recordMessageCost } from "../campaigns/pricing";
 import { prisma } from "../db";
 import { maskPhone, moduleLogger } from "../logger";
 import { getInboundOptIn, getOptOutKeywords } from "../settings";
@@ -463,6 +464,14 @@ async function applyStatusUpdate(
       where: { id: message.contactId },
       data: { whatsappStatus: "VALID" },
     });
+  }
+
+  // Meta bills on delivery, so this is the moment a cost becomes real. READ is
+  // included because an out-of-order webhook can carry us past DELIVERED
+  // without ever processing it, and recordMessageCost only ever prices a
+  // message once.
+  if (next === "DELIVERED" || next === "READ") {
+    await recordMessageCost(message.id);
   }
 
   if (message.campaignRecipientId) {
