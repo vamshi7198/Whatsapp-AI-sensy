@@ -5,6 +5,7 @@ import type { MessageStatus, Prisma } from "@prisma/client";
 import { prisma } from "../db";
 import { maskPhone, moduleLogger } from "../logger";
 import { getInboundOptIn, getOptOutKeywords } from "../settings";
+import { parseMetaWebhook } from "../whatsapp/providers/meta/mappers";
 import type { NormalisedWebhookEvent } from "../whatsapp/types";
 
 const log = moduleLogger("webhook-processor");
@@ -56,39 +57,66 @@ export interface ProcessResult {
   failed: number;
 }
 
+export interface StoreResult {
+  /** Events newly written and awaiting processing. */
+  stored: NormalisedWebhookEvent[];
+  duplicates: number;
+}
+
 /**
- * Stores each event and applies it.
+ * Writes the raw events to the database. Nothing else.
  *
- * The unique constraint on dedupeKey is what makes this safe to call twice
- * with the same payload — the second call sees zero new rows and does nothing.
+ * Called BEFORE responding 200 to Meta, and this ordering is deliberate.
+ * Meta discards an event once it receives a 200, and offers no replay API —
+ * so acknowledging before the payload is durably stored would mean a crash in
+ * that instant loses a customer message for good.
+ *
+ * It stays fast because it only inserts: no lookups, no counters, no
+ * downstream writes. Those happen afterwards, off the request path.
  */
-export async function processWebhookEvents(
+export async function storeWebhookEvents(
   events: NormalisedWebhookEvent[],
   signatureValid: boolean,
+): Promise<StoreResult> {
+  const stored: NormalisedWebhookEvent[] = [];
+  let duplicates = 0;
+
+  for (const event of events) {
+    const created = await prisma.webhookEvent.createMany({
+      data: [
+        {
+          dedupeKey: buildDedupeKey(event),
+          eventType: event.kind,
+          wamid: "externalMessageId" in event ? event.externalMessageId : null,
+          payload: event.raw as Prisma.InputJsonValue,
+          signatureValid,
+        },
+      ],
+      // A Meta retry lands here and is dropped, which is the whole point.
+      skipDuplicates: true,
+    });
+
+    if (created.count === 0) duplicates += 1;
+    else stored.push(event);
+  }
+
+  return { stored, duplicates };
+}
+
+/**
+ * Applies already-stored events to contacts, conversations and campaigns.
+ *
+ * Runs after the response to Meta. If it fails, the raw payload is already
+ * safe in WebhookEvent and the row is marked FAILED, so nothing is lost and
+ * the cause is visible in the activity log.
+ */
+export async function applyStoredEvents(
+  events: NormalisedWebhookEvent[],
 ): Promise<ProcessResult> {
   const result: ProcessResult = { processed: 0, duplicates: 0, failed: 0 };
 
   for (const event of events) {
     const dedupeKey = buildDedupeKey(event);
-
-    const created = await prisma.webhookEvent.createMany({
-      data: [
-        {
-          dedupeKey,
-          eventType: event.kind,
-          wamid:
-            "externalMessageId" in event ? event.externalMessageId : null,
-          payload: event.raw as Prisma.InputJsonValue,
-          signatureValid,
-        },
-      ],
-      skipDuplicates: true,
-    });
-
-    if (created.count === 0) {
-      result.duplicates += 1;
-      continue;
-    }
 
     try {
       await applyEvent(event);
@@ -114,6 +142,51 @@ export async function processWebhookEvents(
   }
 
   return result;
+}
+
+/**
+ * Store then apply, in one call. Used by tests and by the recovery job;
+ * the webhook route splits the two around its response to Meta.
+ */
+export async function processWebhookEvents(
+  events: NormalisedWebhookEvent[],
+  signatureValid: boolean,
+): Promise<ProcessResult> {
+  const { stored, duplicates } = await storeWebhookEvents(
+    events,
+    signatureValid,
+  );
+
+  const applied = await applyStoredEvents(stored);
+  return { ...applied, duplicates };
+}
+
+/**
+ * Re-applies events that were stored but never processed.
+ *
+ * Covers the case where the machine died between storing an event and acting
+ * on it: the payload survived, so the message can still reach the inbox.
+ * Safe to run repeatedly — applying an event twice converges on the same
+ * state.
+ */
+export async function recoverUnprocessedEvents(): Promise<ProcessResult> {
+  const pending = await prisma.webhookEvent.findMany({
+    where: { status: { in: ["RECEIVED", "PROCESSING"] }, signatureValid: true },
+    orderBy: { receivedAt: "asc" },
+    take: 500,
+  });
+
+  if (pending.length === 0) {
+    return { processed: 0, duplicates: 0, failed: 0 };
+  }
+
+  log.warn(
+    { count: pending.length },
+    "Found stored events that were never applied — recovering",
+  );
+
+  const events = pending.flatMap((row) => parseMetaWebhook(row.payload));
+  return applyStoredEvents(events);
 }
 
 async function applyEvent(event: NormalisedWebhookEvent): Promise<void> {

@@ -78,6 +78,12 @@ for ($i = 1; $i -le 12; $i++) {
 
 Write-Host ""
 if ($ok) {
+    # Catch any message that was received but never applied - for example if
+    # the machine lost power between storing it and putting it in the inbox.
+    Write-Host "Checking for missed messages..." -ForegroundColor Cyan
+    & $NpmPath run recover
+    Write-Host ""
+
     Write-Host "Updated and running." -ForegroundColor Green
     try {
         $public = (Invoke-WebRequest -Uri "https://whatsapp.uncanned.in/login" -UseBasicParsing -TimeoutSec 20).StatusCode

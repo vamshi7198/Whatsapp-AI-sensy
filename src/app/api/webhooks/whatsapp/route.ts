@@ -6,7 +6,10 @@ import { safeEquals } from "@/lib/crypto";
 import { env } from "@/lib/env";
 import { moduleLogger } from "@/lib/logger";
 import { forwardWebhook } from "@/lib/webhooks/forwarder";
-import { processWebhookEvents } from "@/lib/webhooks/processor";
+import {
+  applyStoredEvents,
+  storeWebhookEvents,
+} from "@/lib/webhooks/processor";
 import { parseMetaWebhook } from "@/lib/whatsapp/providers/meta/mappers";
 
 const log = moduleLogger("webhook");
@@ -114,16 +117,42 @@ export async function POST(request: Request) {
 
   const events = parseMetaWebhook(payload);
 
-  // Respond first, then persist. Slow processing inside the request would make
-  // Meta retry and duplicate the very events we are trying to record once.
+  // Store the raw payload BEFORE acknowledging. Meta discards an event once
+  // it receives a 200 and offers no replay API, so acknowledging first would
+  // mean a crash in that instant loses a customer message permanently.
+  //
+  // This is only an insert — no lookups, no counters — so it stays well
+  // inside the time Meta allows before it treats the response as failed.
+  let stored: typeof events = [];
+  try {
+    const result = await storeWebhookEvents(events, true);
+    stored = result.stored;
+
+    if (result.duplicates > 0) {
+      log.debug(
+        { duplicates: result.duplicates },
+        "Ignored events Meta had already delivered",
+      );
+    }
+  } catch (error) {
+    // Storing failed, so returning 200 would tell Meta to forget an event we
+    // do not have. A 500 keeps it in Meta's retry queue for up to 7 days.
+    log.error(
+      { err: error instanceof Error ? error.message : error },
+      "Could not store webhook — asking Meta to retry",
+    );
+    return new NextResponse("Storage failed", { status: 500 });
+  }
+
+  // Everything below is safe to lose: the payload is already durable, and
+  // recoverUnprocessedEvents() will pick up anything left unapplied.
   after(async () => {
     try {
-      const result = await processWebhookEvents(events, true);
+      const result = await applyStoredEvents(stored);
       log.info(
         {
           received: events.length,
           processed: result.processed,
-          duplicates: result.duplicates,
           failed: result.failed,
         },
         "Webhook events applied",
