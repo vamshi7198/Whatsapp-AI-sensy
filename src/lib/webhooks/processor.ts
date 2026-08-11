@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 
 import type { MessageStatus, Prisma } from "@prisma/client";
 
+import { runAutomationsForInbound } from "../automations/engine";
 import { recordMessageCost } from "../campaigns/pricing";
 import { prisma } from "../db";
 import { maskPhone, moduleLogger } from "../logger";
@@ -300,6 +301,26 @@ async function applyInboundMessage(
     { from: maskPhone(event.from), type: event.type },
     "Inbound message stored",
   );
+
+  // Last, and deliberately after the opt-out check, so a customer who just
+  // said STOP is not answered by a robot. Failures are contained here: an
+  // automation that breaks must never cost us the message itself, which is
+  // already safely stored above.
+  try {
+    await runAutomationsForInbound({
+      contactId: contact.id,
+      phoneE164: event.from,
+      text: event.text ?? null,
+      externalMessageId: event.externalMessageId,
+      conversationId: conversation.id,
+      lastInboundAt: event.timestamp,
+    });
+  } catch (error) {
+    log.error(
+      { err: error instanceof Error ? error.message : error },
+      "Automations threw — the message itself was still stored",
+    );
+  }
 }
 
 /**
