@@ -265,52 +265,40 @@ function Canvas(props: CanvasProps) {
     setSelectedId(null);
   }
 
+  /**
+   * Steps created in this session were saved under real ids.
+   *
+   * Adopting them is what lets a validation error be matched back to its box
+   * for the rest of the session.
+   */
+  function adoptIds(map: Record<string, string>) {
+    const rename = (id: string) => map[id] ?? id;
+
+    setNodes((current) =>
+      current.map((node) => ({
+        ...node,
+        id: rename(node.id),
+        data: { ...node.data, step: { ...node.data.step, id: rename(node.id) } },
+      })),
+    );
+
+    setEdges((current) =>
+      current.map((edge) => ({
+        ...edge,
+        source: rename(edge.source),
+        target: rename(edge.target),
+      })),
+    );
+
+    setSelectedId((current) => (current ? rename(current) : current));
+  }
+
   function save() {
     startTransition(async () => {
-      const result = await saveGraphAction({
-        versionId: props.versionId,
-        steps: nodes.map((node) => ({
-          id: node.id,
-          type: node.data.step.type,
-          name: node.data.step.name,
-          config: node.data.step.config,
-          x: Math.round(node.position.x),
-          y: Math.round(node.position.y),
-        })),
-        links: edges.map((edge) => ({
-          fromStepId: edge.source,
-          optionId: edge.sourceHandle ?? null,
-          toStepId: edge.target,
-        })),
-      });
+      const result = await saveGraphAction(currentGraph());
 
       setState({ error: result.error, success: result.success });
-
-      // Steps created in this session were saved under real ids. Adopting
-      // them is what lets a validation error be matched back to its box.
-      if (result.idMap) {
-        const map = result.idMap;
-        const rename = (id: string) => map[id] ?? id;
-
-        setNodes((current) =>
-          current.map((node) => ({
-            ...node,
-            id: rename(node.id),
-            data: { ...node.data, step: { ...node.data.step, id: rename(node.id) } },
-          })),
-        );
-
-        setEdges((current) =>
-          current.map((edge) => ({
-            ...edge,
-            source: rename(edge.source),
-            target: rename(edge.target),
-          })),
-        );
-
-        setSelectedId((current) => (current ? rename(current) : current));
-      }
-
+      if (result.idMap) adoptIds(result.idMap);
       if (result.validation) setValidation(result.validation);
     });
   }
@@ -329,16 +317,46 @@ function Canvas(props: CanvasProps) {
     });
   }
 
+  /** The canvas as the server wants it. */
+  function currentGraph() {
+    return {
+      versionId: props.versionId,
+      steps: nodes.map((node) => ({
+        id: node.id,
+        type: node.data.step.type,
+        name: node.data.step.name,
+        config: node.data.step.config,
+        x: Math.round(node.position.x),
+        y: Math.round(node.position.y),
+      })),
+      links: edges.map((edge) => ({
+        fromStepId: edge.source,
+        optionId: edge.sourceHandle ?? null,
+        toStepId: edge.target,
+      })),
+    };
+  }
+
   function publish() {
     startTransition(async () => {
-      // Saved first: publishing what is on screen rather than what was last
-      // written is what the button appears to promise.
+      // Saved first, always. Publishing validated whatever was last written,
+      // so drawing a line and pressing Publish reported problems the operator
+      // had already fixed on screen — with no way to tell why.
+      const saved = await saveGraphAction(currentGraph());
+
+      if (saved.error) {
+        setState({ error: saved.error });
+        return;
+      }
+
+      if (saved.idMap) adoptIds(saved.idMap);
+
       const formData = new FormData();
       formData.set("versionId", props.versionId);
 
       const result = await publishJourneyAction({}, formData);
       setState({ error: result.error, success: result.success });
-      if (result.validation) setValidation(result.validation);
+      setValidation(result.validation ?? saved.validation ?? validation);
     });
   }
 
@@ -461,11 +479,28 @@ function Canvas(props: CanvasProps) {
               onDelete={() => deleteStep(selected.id)}
             />
           ) : (
-            <div className="space-y-3">
-              <p className="text-sm text-slate-500 dark:text-slate-400">
-                Click a step to change it, or add one from the left.
-              </p>
+            <p className="text-sm text-slate-500 dark:text-slate-400">
+              Click a step to change it, or add one from the left.
+            </p>
+          )}
 
+          {/*
+            Always shown, whatever is selected. The banner says "fix the
+            problems below", and hiding the list behind a selection made that
+            sentence point at nothing.
+          */}
+          <div
+            className={
+              selected
+                ? "mt-5 space-y-3 border-t border-slate-100 pt-4 dark:border-slate-800"
+                : "mt-3 space-y-3"
+            }
+          >
+            {(validation.errors.length > 0 || validation.warnings.length > 0) && (
+              <p className="text-xs text-slate-400">As of the last save.</p>
+            )}
+
+            <div className="space-y-3">
               {validation.errors.length > 0 && (
                 <div>
                   <p className="text-sm font-medium text-red-700 dark:text-red-400">
@@ -520,11 +555,11 @@ function Canvas(props: CanvasProps) {
 
               {validation.ok && validation.warnings.length === 0 && (
                 <p className="text-xs text-emerald-700 dark:text-emerald-400">
-                  No problems found.
+                  No problems found as of the last save.
                 </p>
               )}
             </div>
-          )}
+          </div>
         </aside>
       </div>
     </div>

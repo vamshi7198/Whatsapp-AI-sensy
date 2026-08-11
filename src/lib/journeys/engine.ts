@@ -175,6 +175,10 @@ export async function advanceSession(input: {
         sessionId: session.id,
         externalId: input.externalId,
         kind: input.optionId ? "option" : "text",
+        // Kept for reporting. By the time anyone asks which option people
+        // chose, the session has moved on and this is the only record.
+        stepId: session.currentStepId,
+        optionId: input.optionId,
       },
     });
   } catch {

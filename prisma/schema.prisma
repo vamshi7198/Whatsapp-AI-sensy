@@ -861,12 +861,22 @@ model JourneyEvent {
   externalId String
   kind       String
 
+  /// Which step they were at, and which option they chose.
+  ///
+  /// Recorded for reporting rather than for the engine, which has already
+  /// moved on by the time anyone asks. Without it there is no way to answer
+  /// "how many said no, and which reason did they give" — the question the
+  /// whole journey exists to answer.
+  stepId   String?
+  optionId String?
+
   createdAt DateTime @default(now())
 
   session JourneySession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
 
   @@unique([sessionId, externalId])
   @@index([sessionId, createdAt])
+  @@index([stepId, optionId])
 }
 
 /// One execution of one step, for the operator's execution log.

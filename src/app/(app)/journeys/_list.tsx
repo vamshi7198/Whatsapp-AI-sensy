@@ -186,11 +186,22 @@ export function JourneyList({
                   )}
                 </div>
 
-                <Link href={`/journeys/${journey.id}`}>
-                  <Button variant="secondary" size="sm">
-                    {canManage ? "Open" : "View"}
-                  </Button>
-                </Link>
+                <div className="flex shrink-0 gap-2">
+                  {journey.total > 0 && (
+                    <Link href={`/journeys/${journey.id}/results`}>
+                      <Button variant="secondary" size="sm">
+                        Results
+                      </Button>
+                    </Link>
+                  )}
+                  {canManage && (
+                    <Link href={`/journeys/${journey.id}`}>
+                      <Button variant="secondary" size="sm">
+                        Edit
+                      </Button>
+                    </Link>
+                  )}
+                </div>
               </div>
             </section>
           ))}
