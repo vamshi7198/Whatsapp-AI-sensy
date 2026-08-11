@@ -2,6 +2,7 @@ import "dotenv/config";
 
 import { runDueCampaigns } from "../src/lib/campaigns/sender";
 import { prisma } from "../src/lib/db";
+import { resumeDueSessions } from "../src/lib/journeys/engine";
 
 /**
  * Starts campaigns whose scheduled time has arrived.
@@ -17,27 +18,40 @@ import { prisma } from "../src/lib/db";
  */
 
 async function main() {
+  /* --- Campaigns whose send time has arrived --------------------------- */
+
   const started = await runDueCampaigns();
 
   if (started.length === 0) {
-    console.log("Nothing due.");
-    await prisma.$disconnect();
-    return;
+    console.log("Campaigns: nothing due.");
+  } else {
+    console.log(
+      `Campaigns: started ${started.length} scheduled campaign${started.length === 1 ? "" : "s"}:`,
+    );
+
+    for (const c of started) {
+      const when = new Intl.DateTimeFormat("en-IN", {
+        dateStyle: "medium",
+        timeStyle: "short",
+        timeZone: "Asia/Kolkata",
+      }).format(c.scheduledAt);
+
+      console.log(`  ${c.name} — ${c.recipients} recipients, due ${when}`);
+    }
   }
+
+  /* --- Journeys paused on a wait step ---------------------------------- */
+
+  // A wait inside a journey needs something awake to end it. Nothing else on
+  // this machine is, so it rides along with the campaign scheduler rather
+  // than needing a second task to install and remember.
+  const resumed = await resumeDueSessions();
 
   console.log(
-    `Started ${started.length} scheduled campaign${started.length === 1 ? "" : "s"}:\n`,
+    resumed === 0
+      ? "Journeys:  nobody waiting."
+      : `Journeys:  resumed ${resumed} conversation${resumed === 1 ? "" : "s"}.`,
   );
-
-  for (const c of started) {
-    const when = new Intl.DateTimeFormat("en-IN", {
-      dateStyle: "medium",
-      timeStyle: "short",
-      timeZone: "Asia/Kolkata",
-    }).format(c.scheduledAt);
-
-    console.log(`  ${c.name} — ${c.recipients} recipients, due ${when}`);
-  }
 
   await prisma.$disconnect();
 }

@@ -99,11 +99,21 @@ export interface ReplyButton {
   label: string;
 }
 
-/** Meta's hard limits on interactive messages, checked before sending. */
+/**
+ * Meta's hard limits on interactive messages, checked before sending.
+ *
+ * Note MAX_BUTTON_LABEL against MAX_TEMPLATE_BUTTON_LABEL: a template's
+ * quick-reply button allows 25 characters, an interactive one only 20. The
+ * same wording can therefore be legal on the opening template and rejected
+ * on the reply, which is not obvious and has to be caught while the operator
+ * is writing it rather than when a customer is waiting.
+ */
 export const INTERACTIVE_LIMITS = {
   /** Reply buttons per message. More than this needs a list instead. */
   MAX_BUTTONS: 3,
   MAX_BUTTON_LABEL: 20,
+  /** Quick-reply buttons on an approved template get five more characters. */
+  MAX_TEMPLATE_BUTTON_LABEL: 25,
   /** Rows across all sections of a list. */
   MAX_LIST_ROWS: 10,
   MAX_LIST_ROW_TITLE: 24,

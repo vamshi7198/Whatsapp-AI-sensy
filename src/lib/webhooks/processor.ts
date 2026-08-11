@@ -5,6 +5,7 @@ import type { MessageStatus, Prisma } from "@prisma/client";
 import { runAutomationsForInbound } from "../automations/engine";
 import { recordMessageCost } from "../campaigns/pricing";
 import { recordFlowResponse } from "../flows/service";
+import { advanceSession } from "../journeys/engine";
 import { prisma } from "../db";
 import { maskPhone, moduleLogger } from "../logger";
 import { getInboundOptIn, getOptOutKeywords } from "../settings";
@@ -355,6 +356,29 @@ async function applyInboundMessage(
     { from: maskPhone(event.from), type: event.type },
     "Inbound message stored",
   );
+
+  // A journey in progress gets the reply first. Somebody halfway through a
+  // conversation must not also receive a keyword auto-reply talking over it,
+  // so an advanced journey suppresses automations for this message.
+  let handledByJourney = false;
+
+  try {
+    const advanced = await advanceSession({
+      contactId: contact.id,
+      externalId: event.externalMessageId,
+      optionId: event.reply?.id,
+      text: event.text,
+    });
+
+    handledByJourney = advanced.moved;
+  } catch (error) {
+    log.error(
+      { err: error instanceof Error ? error.message : error },
+      "Journey advance threw — the message itself was still stored",
+    );
+  }
+
+  if (handledByJourney) return;
 
   // Last, and deliberately after the opt-out check, so a customer who just
   // said STOP is not answered by a robot. Failures are contained here: an
