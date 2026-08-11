@@ -7,7 +7,9 @@ import type {
   Paginated,
   PhoneNumberProfile,
   ProviderTemplate,
+  SendButtonsInput,
   SendFlowInput,
+  SendListInput,
   SendMediaInput,
   SendResult,
   SendTemplateInput,
@@ -33,6 +35,10 @@ export interface WhatsAppProvider {
   sendMediaMessage(input: SendMediaInput): Promise<SendResult>;
   /** In-chat form. Only deliverable inside the 24-hour service window. */
   sendFlowMessage(input: SendFlowInput): Promise<SendResult>;
+  /** Up to three tappable buttons. Free-form: needs the 24-hour window. */
+  sendButtonsMessage(input: SendButtonsInput): Promise<SendResult>;
+  /** A tappable menu, for more options than buttons allow. */
+  sendListMessage(input: SendListInput): Promise<SendResult>;
 
   /** Sends a read receipt for an inbound message. */
   markMessageAsRead(externalMessageId: string): Promise<boolean>;

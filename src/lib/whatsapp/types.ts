@@ -86,6 +86,65 @@ export interface SendMediaInput {
   filename?: string;
 }
 
+/**
+ * A tappable button on a free-form message.
+ *
+ * The id is ours and comes back on the webhook when tapped. It is what a
+ * journey branches on — never the visible label, which someone will reword
+ * eventually and which would silently break every branch if it were the key.
+ */
+export interface ReplyButton {
+  id: string;
+  /** What the customer sees. Meta caps this at 20 characters. */
+  label: string;
+}
+
+/** Meta's hard limits on interactive messages, checked before sending. */
+export const INTERACTIVE_LIMITS = {
+  /** Reply buttons per message. More than this needs a list instead. */
+  MAX_BUTTONS: 3,
+  MAX_BUTTON_LABEL: 20,
+  /** Rows across all sections of a list. */
+  MAX_LIST_ROWS: 10,
+  MAX_LIST_ROW_TITLE: 24,
+  MAX_LIST_ROW_DESCRIPTION: 72,
+  MAX_LIST_BUTTON_LABEL: 20,
+  MAX_BODY: 1024,
+  MAX_HEADER: 60,
+  MAX_FOOTER: 60,
+} as const;
+
+/** Up to three buttons under a message. Free-form: needs the 24-hour window. */
+export interface SendButtonsInput {
+  to: string;
+  body: string;
+  buttons: ReplyButton[];
+  header?: string;
+  footer?: string;
+}
+
+export interface ListRow extends ReplyButton {
+  description?: string;
+}
+
+/**
+ * A tappable menu, for when there are more options than buttons allow.
+ *
+ * Costs the customer one extra tap — the menu opens rather than sitting in the
+ * chat — which is why buttons are preferred until they run out.
+ */
+export interface SendListInput {
+  to: string;
+  body: string;
+  /** The button that opens the menu, e.g. "Choose a flavour". */
+  buttonLabel: string;
+  rows: ListRow[];
+  /** Optional grouping. Omitted means one unnamed section. */
+  sectionTitle?: string;
+  header?: string;
+  footer?: string;
+}
+
 /** Sending an in-chat form. Only valid inside the 24-hour window. */
 export interface SendFlowInput {
   to: string;
@@ -202,6 +261,20 @@ export type NormalisedWebhookEvent =
       type: string;
       text?: string;
       timestamp: Date;
+      /**
+       * Set when the customer tapped a button or picked from a menu.
+       *
+       * The id is the one we sent, so a journey can branch on it without
+       * depending on the visible wording, which someone will eventually
+       * change. Templates are the exception: Meta returns only the title for
+       * a template's own quick-reply buttons, so id falls back to it there.
+       */
+      reply?: {
+        id: string;
+        title?: string;
+        /** How the customer chose: buttons under a message, or a menu. */
+        source: "button" | "list" | "template_button";
+      };
       /**
        * Set when the customer completed a Flow — an in-chat form.
        *

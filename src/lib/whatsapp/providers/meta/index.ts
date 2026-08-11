@@ -4,6 +4,9 @@ import { moduleLogger } from "@/lib/logger";
 import type { MetaConfig } from "@/lib/settings";
 
 import type { WhatsAppProvider } from "../../provider";
+// A value, not a type: the limits are read at runtime to refuse a message
+// Meta would reject anyway, with a sentence naming the fix.
+import { INTERACTIVE_LIMITS } from "../../types";
 import type {
   BusinessAccountProfile,
   BusinessProfile,
@@ -13,7 +16,9 @@ import type {
   Paginated,
   PhoneNumberProfile,
   ProviderTemplate,
+  SendButtonsInput,
   SendFlowInput,
+  SendListInput,
   SendMediaInput,
   SendResult,
   SendTemplateInput,
@@ -158,6 +163,145 @@ export class MetaCloudProvider implements WhatsAppProvider {
         link: input.link,
         ...(input.caption ? { caption: input.caption } : {}),
         ...(input.filename ? { filename: input.filename } : {}),
+      },
+    });
+  }
+
+  /**
+   * Sends a message with up to three tappable buttons.
+   *
+   * Free-form, so it only works inside the 24-hour window the customer's own
+   * message opened. Outside it, buttons have to be baked into an approved
+   * template instead — they cannot be attached at send time.
+   *
+   * Each button carries our own id, which comes back on the webhook when
+   * tapped. Branching reads that id and never the label, so rewording a
+   * button cannot silently break the branch behind it.
+   */
+  async sendButtonsMessage(input: SendButtonsInput): Promise<SendResult> {
+    if (input.buttons.length === 0) {
+      return {
+        accepted: false,
+        error: {
+          code: "no_buttons",
+          retryable: false,
+          userMessage: "This message has no buttons to show.",
+        },
+      };
+    }
+
+    // Refused here rather than letting Meta reject it, so the caller gets a
+    // sentence naming the real fix instead of a validation error.
+    if (input.buttons.length > INTERACTIVE_LIMITS.MAX_BUTTONS) {
+      return {
+        accepted: false,
+        error: {
+          code: "too_many_buttons",
+          retryable: false,
+          userMessage: `WhatsApp allows at most ${INTERACTIVE_LIMITS.MAX_BUTTONS} buttons on a message. Use a list for more options.`,
+        },
+      };
+    }
+
+    const tooLong = input.buttons.find(
+      (b) => b.label.length > INTERACTIVE_LIMITS.MAX_BUTTON_LABEL,
+    );
+
+    if (tooLong) {
+      return {
+        accepted: false,
+        error: {
+          code: "button_label_too_long",
+          retryable: false,
+          userMessage: `The button "${tooLong.label}" is too long. WhatsApp allows ${INTERACTIVE_LIMITS.MAX_BUTTON_LABEL} characters.`,
+        },
+      };
+    }
+
+    return this.send({
+      messaging_product: "whatsapp",
+      recipient_type: "individual",
+      to: toRecipient(input.to),
+      type: "interactive",
+      interactive: {
+        type: "button",
+        ...(input.header ? { header: { type: "text", text: input.header } } : {}),
+        body: { text: input.body },
+        ...(input.footer ? { footer: { text: input.footer } } : {}),
+        action: {
+          buttons: input.buttons.map((b) => ({
+            type: "reply",
+            reply: { id: b.id, title: b.label },
+          })),
+        },
+      },
+    });
+  }
+
+  /**
+   * Sends a tappable menu, for more options than buttons allow.
+   *
+   * Same 24-hour restriction as buttons. Rows carry our own ids for the same
+   * reason.
+   */
+  async sendListMessage(input: SendListInput): Promise<SendResult> {
+    if (input.rows.length === 0) {
+      return {
+        accepted: false,
+        error: {
+          code: "no_rows",
+          retryable: false,
+          userMessage: "This menu has no options to show.",
+        },
+      };
+    }
+
+    if (input.rows.length > INTERACTIVE_LIMITS.MAX_LIST_ROWS) {
+      return {
+        accepted: false,
+        error: {
+          code: "too_many_rows",
+          retryable: false,
+          userMessage: `WhatsApp allows at most ${INTERACTIVE_LIMITS.MAX_LIST_ROWS} options in a menu.`,
+        },
+      };
+    }
+
+    return this.send({
+      messaging_product: "whatsapp",
+      recipient_type: "individual",
+      to: toRecipient(input.to),
+      type: "interactive",
+      interactive: {
+        type: "list",
+        ...(input.header ? { header: { type: "text", text: input.header } } : {}),
+        body: { text: input.body },
+        ...(input.footer ? { footer: { text: input.footer } } : {}),
+        action: {
+          button: input.buttonLabel.slice(
+            0,
+            INTERACTIVE_LIMITS.MAX_LIST_BUTTON_LABEL,
+          ),
+          sections: [
+            {
+              // Meta requires a title only when there is more than one
+              // section, so a single unnamed section is valid.
+              ...(input.sectionTitle ? { title: input.sectionTitle } : {}),
+              rows: input.rows.map((r) => ({
+                id: r.id,
+                title: r.label.slice(0, INTERACTIVE_LIMITS.MAX_LIST_ROW_TITLE),
+                ...(r.description
+                  ? {
+                      description: r.description.slice(
+                        0,
+                        INTERACTIVE_LIMITS.MAX_LIST_ROW_DESCRIPTION,
+                      ),
+                    }
+                  : {}),
+              })),
+            },
+          ],
+        },
       },
     });
   }

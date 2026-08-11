@@ -173,6 +173,92 @@ describe("parseMetaWebhook", () => {
     });
   });
 
+  /*
+    A journey branches on what the customer tapped, so reading the right
+    identifier is what decides whether they get the right next message.
+    Labels get reworded; ids do not.
+  */
+  function inbound(message: Record<string, unknown>) {
+    return parseMetaWebhook({
+      entry: [
+        {
+          changes: [
+            {
+              field: "messages",
+              value: {
+                messages: [
+                  {
+                    id: "wamid.REPLY",
+                    from: "919876543210",
+                    timestamp: "1754400000",
+                    ...message,
+                  },
+                ],
+              },
+            },
+          ],
+        },
+      ],
+    })[0];
+  }
+
+  it("reads our own id from a tapped button, not its label", () => {
+    const event = inbound({
+      type: "interactive",
+      interactive: {
+        type: "button_reply",
+        button_reply: { id: "claim_sample", title: "Yes, I want a free sample" },
+      },
+    });
+
+    expect(event).toMatchObject({
+      kind: "inbound_message",
+      reply: {
+        id: "claim_sample",
+        title: "Yes, I want a free sample",
+        source: "button",
+      },
+    });
+  });
+
+  it("reads our own id from a menu selection", () => {
+    const event = inbound({
+      type: "interactive",
+      interactive: {
+        type: "list_reply",
+        list_reply: { id: "flavour_cola", title: "Classic Cola" },
+      },
+    });
+
+    expect(event).toMatchObject({
+      reply: { id: "flavour_cola", title: "Classic Cola", source: "list" },
+    });
+  });
+
+  it("falls back to the text for a template's own button", () => {
+    // Meta sends no id for these — the button was fixed at approval time —
+    // so the visible text is all there is to branch on.
+    const event = inbound({
+      type: "button",
+      button: { text: "Not interested", payload: "Not interested" },
+    });
+
+    expect(event).toMatchObject({
+      reply: {
+        id: "Not interested",
+        title: "Not interested",
+        source: "template_button",
+      },
+    });
+  });
+
+  it("reports no reply for an ordinary message", () => {
+    const event = inbound({ type: "text", text: { body: "hello" } });
+
+    expect(event).toMatchObject({ kind: "inbound_message", text: "hello" });
+    expect(event).not.toHaveProperty("reply");
+  });
+
   it("parses a delivery status with pricing", () => {
     const events = parseMetaWebhook({
       entry: [

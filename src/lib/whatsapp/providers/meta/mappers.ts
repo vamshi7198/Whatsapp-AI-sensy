@@ -145,8 +145,10 @@ interface MetaWebhookPayload {
           button?: { text?: string };
           interactive?: {
             type?: string;
-            button_reply?: { title?: string };
-            list_reply?: { title?: string };
+            // The id is ours, set when the message was sent. It is what a
+            // journey branches on — the title is only what the customer saw.
+            button_reply?: { id?: string; title?: string };
+            list_reply?: { id?: string; title?: string; description?: string };
             // A completed Flow. response_json is a STRING of JSON, not an
             // object, and carries the answers the customer filled in.
             nfm_reply?: {
@@ -214,6 +216,50 @@ function extractText(
     message.interactive?.button_reply?.title ??
     message.interactive?.list_reply?.title
   );
+}
+
+type InboundMessage = NonNullable<
+  NonNullable<
+    NonNullable<MetaWebhookPayload["entry"]>[number]["changes"]
+  >[number]["value"]
+>["messages"] extends (infer M)[] | undefined
+  ? M
+  : never;
+
+/**
+ * Works out what the customer tapped, if anything.
+ *
+ * Three shapes arrive, and only two of them carry an id we chose:
+ *
+ *  - A button under a free-form message: our id comes back, use it.
+ *  - A row in a menu: same.
+ *  - A quick-reply button on a TEMPLATE: Meta sends only the text, because
+ *    the button was defined at approval time and has no id of ours. The
+ *    title becomes the id, which is why a journey branching on a template
+ *    button breaks if the template's wording is changed at Meta.
+ */
+function extractReply(message: InboundMessage) {
+  const button = message.interactive?.button_reply;
+  if (button?.id) {
+    return { id: button.id, title: button.title, source: "button" as const };
+  }
+
+  const row = message.interactive?.list_reply;
+  if (row?.id) {
+    return { id: row.id, title: row.title, source: "list" as const };
+  }
+
+  // A template's own quick-reply button arrives outside `interactive`.
+  const templateButton = message.button?.text;
+  if (templateButton) {
+    return {
+      id: templateButton,
+      title: templateButton,
+      source: "template_button" as const,
+    };
+  }
+
+  return undefined;
 }
 
 /**
@@ -292,6 +338,8 @@ export function parseMetaWebhook(payload: unknown): NormalisedWebhookEvent[] {
           message.interactive?.nfm_reply?.response_json,
         );
 
+        const reply = extractReply(message);
+
         events.push({
           kind: "inbound_message",
           externalMessageId: message.id,
@@ -300,6 +348,7 @@ export function parseMetaWebhook(payload: unknown): NormalisedWebhookEvent[] {
           type: message.type ?? "unknown",
           text: extractText(message),
           timestamp: toDate(message.timestamp),
+          ...(reply ? { reply } : {}),
           ...(flowAnswers
             ? {
                 flowResponse: {
