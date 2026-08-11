@@ -76,7 +76,7 @@ function StepBox({ data, selected }: NodeProps<StepNode>) {
         <Handle
           type="target"
           position={Position.Left}
-          className="!h-3 !w-3 !border-2 !border-white !bg-slate-400"
+          className="!h-4 !w-4 !border-2 !border-white !bg-slate-400"
         />
       )}
 
@@ -109,18 +109,26 @@ function StepBox({ data, selected }: NodeProps<StepNode>) {
       */}
       {options.length > 0 ? (
         <div className="border-t border-slate-100 dark:border-slate-800">
-          {options.map((option, index) => (
+          {options.map((option) => (
             <div
               key={option.id}
-              className="relative border-b border-slate-50 px-3 py-1.5 text-xs text-slate-600 last:border-0 dark:border-slate-800 dark:text-slate-400"
+              /*
+                Each row positions its own dot. React Flow centres a handle
+                inside whatever is positioned around it, so giving the row
+                `relative` is the whole of the layout — an explicit offset on
+                top of that pushed every dot after the first out of its row
+                and made it impossible to grab.
+              */
+              className="relative flex items-center border-b border-slate-50 px-3 py-2 text-xs text-slate-600 last:border-0 dark:border-slate-800 dark:text-slate-400"
             >
-              {option.label}
+              <span className="truncate">{option.label}</span>
               <Handle
                 id={option.id}
                 type="source"
                 position={Position.Right}
-                style={{ top: 14 + index * 29 }}
-                className="!h-3 !w-3 !border-2 !border-white !bg-emerald-500"
+                // Bigger than the default: this is the thing the operator has
+                // to hit with a mouse, several times, to build a branch.
+                className="!h-4 !w-4 !border-2 !border-white !bg-emerald-500 hover:!bg-emerald-400"
               />
             </div>
           ))}
@@ -131,7 +139,7 @@ function StepBox({ data, selected }: NodeProps<StepNode>) {
           <Handle
             type="source"
             position={Position.Right}
-            className="!h-3 !w-3 !border-2 !border-white !bg-emerald-500"
+            className="!h-4 !w-4 !border-2 !border-white !bg-emerald-500 hover:!bg-emerald-400"
           />
         )
       )}
