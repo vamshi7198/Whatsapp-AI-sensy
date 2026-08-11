@@ -6,10 +6,14 @@ import { useState, useTransition } from "react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Field, Input, Textarea } from "@/components/ui/field";
+import { Field, Input, Select, Textarea } from "@/components/ui/field";
 import { formatNumber } from "@/lib/utils";
 
-import { createJourneyAction, type JourneyState } from "./actions";
+import {
+  createJourneyAction,
+  startForAudienceAction,
+  type JourneyState,
+} from "./actions";
 
 interface JourneyRow {
   id: string;
@@ -28,15 +32,20 @@ interface JourneyRow {
 
 export function JourneyList({
   canManage,
+  canSend,
   journeys,
+  tags,
 }: {
   canManage: boolean;
+  canSend: boolean;
   journeys: JourneyRow[];
+  tags: Array<{ id: string; name: string }>;
 }) {
   const router = useRouter();
   const [state, setState] = useState<JourneyState>({});
   const [isPending, startTransition] = useTransition();
   const [creating, setCreating] = useState(false);
+  const [sending, setSending] = useState<string | null>(null);
 
   return (
     <div className="space-y-5">
@@ -187,6 +196,16 @@ export function JourneyList({
                 </div>
 
                 <div className="flex shrink-0 gap-2">
+                  {journey.isLive && canSend && (
+                    <Button
+                      size="sm"
+                      onClick={() =>
+                        setSending(sending === journey.id ? null : journey.id)
+                      }
+                    >
+                      Send to people
+                    </Button>
+                  )}
                   {journey.total > 0 && (
                     <Link href={`/journeys/${journey.id}/results`}>
                       <Button variant="secondary" size="sm">
@@ -203,6 +222,60 @@ export function JourneyList({
                   )}
                 </div>
               </div>
+
+              {sending === journey.id && (
+                <form
+                  action={(formData) => {
+                    formData.set("journeyId", journey.id);
+                    startTransition(async () => {
+                      setState(await startForAudienceAction({}, formData));
+                      setSending(null);
+                    });
+                  }}
+                  className="mt-4 space-y-3 border-t border-slate-100 pt-4 dark:border-slate-800"
+                >
+                  <Field label="Who should get this?" htmlFor={`tag-${journey.id}`}>
+                    <Select id={`tag-${journey.id}`} name="tagId" defaultValue="">
+                      <option value="">Everyone who can receive messages</option>
+                      {tags.map((t) => (
+                        <option key={t.id} value={t.id}>
+                          Tagged {t.name}
+                        </option>
+                      ))}
+                    </Select>
+                  </Field>
+
+                  {/*
+                    Said plainly. This is the point where a conversation reaches
+                    real people and starts costing money, and it cannot be
+                    recalled once WhatsApp has it.
+                  */}
+                  <p className="rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-900 dark:bg-amber-950 dark:text-amber-200">
+                    This sends a real WhatsApp message to everyone in that group
+                    and cannot be undone. Anyone who has opted out is skipped
+                    automatically, and anyone already partway through this
+                    journey is left alone.
+                  </p>
+
+                  <label className="flex items-start gap-2 text-sm text-slate-700 dark:text-slate-300">
+                    <input type="checkbox" name="confirmed" className="mt-0.5" />
+                    I have tested this journey and it is ready to go out.
+                  </label>
+
+                  <div className="flex gap-2">
+                    <Button type="submit" disabled={isPending}>
+                      {isPending ? "Starting…" : "Start it"}
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      onClick={() => setSending(null)}
+                    >
+                      Cancel
+                    </Button>
+                  </div>
+                </form>
+              )}
             </section>
           ))}
         </div>

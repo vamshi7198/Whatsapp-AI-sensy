@@ -134,6 +134,142 @@ export async function startJourney(input: {
   return { ok: true, sessionId };
 }
 
+export interface AudienceStartResult {
+  ok: boolean;
+  error?: string;
+  started: number;
+  skipped: number;
+  alreadyIn: number;
+}
+
+/**
+ * Puts a whole audience into a journey.
+ *
+ * The bulk equivalent of startJourney, and it follows the same rules
+ * campaigns do: marketing needs opt-in, an opt-out is honoured, and a
+ * deleted contact is left alone.
+ *
+ * Sent one at a time rather than in parallel. WhatsApp throttles, and the
+ * campaign sender already learned that lesson — going slowly is cheaper than
+ * being rate-limited halfway through.
+ */
+export async function startJourneyForContacts(input: {
+  journeyId: string;
+  contactIds: string[];
+  trigger?: string;
+}): Promise<AudienceStartResult> {
+  const result: AudienceStartResult = {
+    ok: true,
+    started: 0,
+    skipped: 0,
+    alreadyIn: 0,
+  };
+
+  const journey = await prisma.journey.findUnique({
+    where: { id: input.journeyId },
+    select: { liveVersionId: true },
+  });
+
+  if (!journey?.liveVersionId) {
+    return {
+      ...result,
+      ok: false,
+      error: "Publish this journey before sending it to anyone.",
+    };
+  }
+
+  // The first step decides who can be reached at all. A free-form message
+  // only reaches somebody who wrote in the last 24 hours, which is almost
+  // nobody on a list — so this is refused up front rather than failing
+  // silently for every recipient.
+  const first = await firstSendingStep(journey.liveVersionId);
+
+  if (first && first.type !== "SEND_TEMPLATE") {
+    return {
+      ...result,
+      ok: false,
+      error:
+        "The first step must be a template. WhatsApp only allows a plain message within 24 hours of someone writing to you, so a journey that opens with one cannot reach a list.",
+    };
+  }
+
+  for (const contactId of input.contactIds) {
+    const existing = await prisma.journeySession.findFirst({
+      where: { journeyId: input.journeyId, contactId },
+      select: { id: true },
+    });
+
+    if (existing) {
+      result.alreadyIn += 1;
+      continue;
+    }
+
+    const started = await startJourney({
+      journeyId: input.journeyId,
+      contactId,
+      trigger: input.trigger,
+    });
+
+    if (started.ok) result.started += 1;
+    else result.skipped += 1;
+  }
+
+  log.info(
+    { journeyId: input.journeyId, ...result },
+    "Journey started for an audience",
+  );
+
+  return result;
+}
+
+/** The first step that actually sends something, following the arrows. */
+async function firstSendingStep(
+  versionId: string,
+): Promise<{ id: string; type: string } | null> {
+  const start = await prisma.journeyStep.findFirst({
+    where: { versionId, type: "START" },
+    select: { id: true },
+  });
+
+  if (!start) return null;
+
+  let currentId: string | null = start.id;
+  const seen = new Set<string>();
+
+  // Bounded by seen: a journey drawn as a circle must not hang this.
+  while (currentId && !seen.has(currentId)) {
+    seen.add(currentId);
+
+    const next: { toStepId: string } | null = await prisma.journeyLink.findFirst({
+      where: { fromStepId: currentId, optionId: null },
+      select: { toStepId: true },
+    });
+
+    if (!next) return null;
+
+    const step: { id: string; type: string } | null =
+      await prisma.journeyStep.findUnique({
+        where: { id: next.toStepId },
+        select: { id: true, type: true },
+      });
+
+    if (!step) return null;
+
+    if (
+      step.type === "SEND_TEMPLATE" ||
+      step.type === "SEND_MESSAGE" ||
+      step.type === "ASK_QUESTION" ||
+      step.type === "SEND_MEDIA"
+    ) {
+      return step;
+    }
+
+    currentId = step.id;
+  }
+
+  return null;
+}
+
 /* -------------------------------------------------------------------------- */
 /* Advancing on a reply                                                        */
 /* -------------------------------------------------------------------------- */

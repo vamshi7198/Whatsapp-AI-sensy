@@ -5,7 +5,8 @@ import { revalidatePath } from "next/cache";
 import { audit } from "@/lib/audit";
 import { requireApiAuth } from "@/lib/auth/guards";
 import { prisma } from "@/lib/db";
-import { startJourney } from "@/lib/journeys/engine";
+import { resolveAudience } from "@/lib/campaigns/audience";
+import { startJourney, startJourneyForContacts } from "@/lib/journeys/engine";
 import {
   checkJourney,
   createJourney,
@@ -146,6 +147,103 @@ export async function newDraftAction(
       return { error: "You do not have permission to edit journeys." };
     }
     return { error: "Could not open that journey for editing." };
+  }
+}
+
+/**
+ * Starts a journey for everyone in an audience.
+ *
+ * The same compliance gate campaigns use, because this messages exactly the
+ * same people for the same commercial reason and the rules do not change
+ * because the message happens to have buttons on it.
+ */
+export async function startForAudienceAction(
+  _prev: JourneyState,
+  formData: FormData,
+): Promise<JourneyState> {
+  try {
+    const user = await requireApiAuth("campaign:send");
+
+    const journeyId = String(formData.get("journeyId") ?? "");
+    const tagId = String(formData.get("tagId") ?? "");
+    const confirmed = formData.get("confirmed") === "on";
+
+    if (!confirmed) {
+      return { error: "Tick the confirmation box before starting." };
+    }
+
+    const journey = await prisma.journey.findUnique({
+      where: { id: journeyId },
+      select: { name: true, liveVersionId: true },
+    });
+
+    if (!journey) return { error: "That journey no longer exists." };
+
+    if (!journey.liveVersionId) {
+      return { error: "Publish this journey before sending it to anyone." };
+    }
+
+    // Category decides the compliance rule, and it comes from the template the
+    // journey opens with rather than being asked for separately.
+    const templateStep = await prisma.journeyStep.findFirst({
+      where: { versionId: journey.liveVersionId, type: "SEND_TEMPLATE" },
+      select: { config: true },
+    });
+
+    const templateId = templateStep
+      ? String((templateStep.config as { templateId?: string })?.templateId ?? "")
+      : "";
+
+    const template = templateId
+      ? await prisma.template.findUnique({
+          where: { id: templateId },
+          select: { category: true },
+        })
+      : null;
+
+    const resolved = await resolveAudience(
+      tagId ? { type: "TAG", tagIds: [tagId] } : { type: "ALL_CONTACTS" },
+      template?.category ?? "MARKETING",
+    );
+
+    if (resolved.eligible.length === 0) {
+      return {
+        error:
+          resolved.totalMatched === 0
+            ? "No contacts match that group."
+            : "Everyone in that group was excluded — check who has agreed to receive messages.",
+      };
+    }
+
+    const result = await startJourneyForContacts({
+      journeyId,
+      contactIds: resolved.eligible.map((m) => m.contactId),
+      trigger: `sent by ${user.name}`,
+    });
+
+    if (!result.ok) return { error: result.error };
+
+    await audit(user, "journey.start_audience", {
+      entityType: "Journey",
+      entityId: journeyId,
+      metadata: { started: result.started, tagId: tagId || null },
+    });
+
+    revalidatePath("/journeys");
+
+    return {
+      success:
+        `Started for ${result.started} ${result.started === 1 ? "person" : "people"}.` +
+        (result.alreadyIn > 0
+          ? ` ${result.alreadyIn} were already partway through and were left alone.`
+          : "") +
+        (result.skipped > 0 ? ` ${result.skipped} could not be started.` : ""),
+    };
+  } catch (error) {
+    if (error instanceof ForbiddenError) {
+      return { error: "You do not have permission to send to an audience." };
+    }
+    return { error: "Could not start the journey." };
   }
 }
 

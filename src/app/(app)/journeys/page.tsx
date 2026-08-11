@@ -10,7 +10,10 @@ export const metadata = { title: "Journeys" };
 export default async function JourneysPage() {
   const user = await requireAuth("journey:view");
 
-  const journeys = await listJourneys();
+  const [journeys, tags] = await Promise.all([
+    listJourneys(),
+    prisma.tag.findMany({ orderBy: { name: "asc" }, select: { id: true, name: true } }),
+  ]);
 
   // How people are actually moving through each one. Counted per journey
   // rather than per version, since the operator thinks about the journey.
@@ -30,6 +33,11 @@ export default async function JourneysPage() {
   return (
     <JourneyList
       canManage={can(user, "journey:manage")}
+      // Gated on campaign:send rather than journey:manage — starting one for
+      // an audience messages real customers and costs money, which is a
+      // different decision from drawing the conversation.
+      canSend={can(user, "campaign:send")}
+      tags={tags}
       journeys={journeys.map((j) => {
         const stats = byJourney.get(j.id) ?? {};
         const live = j.versions.find((v) => v.status === "PUBLISHED");
