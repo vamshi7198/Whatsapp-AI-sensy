@@ -10,6 +10,7 @@ import {
   ReactFlowProvider,
   useEdgesState,
   useNodesState,
+  useReactFlow,
   type Connection,
   type Edge,
   type Node,
@@ -160,6 +161,7 @@ function Canvas(props: CanvasProps) {
   const [isPending, startTransition] = useTransition();
   const [testPhone, setTestPhone] = useState("");
   const newStepCount = useRef(0);
+  const { setCenter } = useReactFlow();
 
   /** Problems keyed by step, so a box can show its own. */
   const problems = useMemo(() => {
@@ -283,7 +285,47 @@ function Canvas(props: CanvasProps) {
       });
 
       setState({ error: result.error, success: result.success });
+
+      // Steps created in this session were saved under real ids. Adopting
+      // them is what lets a validation error be matched back to its box.
+      if (result.idMap) {
+        const map = result.idMap;
+        const rename = (id: string) => map[id] ?? id;
+
+        setNodes((current) =>
+          current.map((node) => ({
+            ...node,
+            id: rename(node.id),
+            data: { ...node.data, step: { ...node.data.step, id: rename(node.id) } },
+          })),
+        );
+
+        setEdges((current) =>
+          current.map((edge) => ({
+            ...edge,
+            source: rename(edge.source),
+            target: rename(edge.target),
+          })),
+        );
+
+        setSelectedId((current) => (current ? rename(current) : current));
+      }
+
       if (result.validation) setValidation(result.validation);
+    });
+  }
+
+  /** Selects a step and brings it into view — used from the problem list. */
+  function goToStep(stepId: string) {
+    const node = nodes.find((n) => n.id === stepId);
+    if (!node) return;
+
+    setSelectedId(stepId);
+    // Offset by roughly half a box, so the box lands centred rather than
+    // with its top-left corner in the middle of the screen.
+    setCenter(node.position.x + 120, node.position.y + 60, {
+      zoom: 1,
+      duration: 400,
     });
   }
 
@@ -429,11 +471,31 @@ function Canvas(props: CanvasProps) {
                   <p className="text-sm font-medium text-red-700 dark:text-red-400">
                     Fix before publishing
                   </p>
+                  {/*
+                    Clickable, because several steps can share a name — four
+                    called "End" is normal — and a list that only names them
+                    tells the operator nothing about which one is wrong.
+                  */}
                   <ul className="mt-1 space-y-1">
                     {validation.errors.map((e, i) => (
-                      <li key={i} className="text-xs text-red-600 dark:text-red-400">
-                        {e.stepName ? `${e.stepName}: ` : ""}
-                        {e.message}
+                      <li key={i}>
+                        {e.stepId ? (
+                          <button
+                            type="button"
+                            onClick={() => goToStep(e.stepId as string)}
+                            className="w-full rounded-lg border border-red-200 bg-red-50 px-2 py-1.5 text-left text-xs text-red-700 transition hover:bg-red-100 dark:border-red-900 dark:bg-red-950 dark:text-red-300 dark:hover:bg-red-900"
+                          >
+                            <span className="font-medium">{e.stepName}</span>
+                            <span className="block">{e.message}</span>
+                            <span className="mt-0.5 block text-red-500">
+                              Click to find it →
+                            </span>
+                          </button>
+                        ) : (
+                          <span className="block px-2 text-xs text-red-600 dark:text-red-400">
+                            {e.message}
+                          </span>
+                        )}
                       </li>
                     ))}
                   </ul>

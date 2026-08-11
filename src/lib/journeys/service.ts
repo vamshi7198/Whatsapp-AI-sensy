@@ -80,17 +80,22 @@ export async function createJourney(input: {
 }
 
 /**
- * Replaces a draft version's graph with what the canvas is showing.
+ * Saves what the canvas is showing.
  *
- * Whole-graph replacement rather than a diff: the canvas is the truth, diffs
- * of a graph are where subtle corruption lives, and a journey is small enough
- * that rewriting it costs nothing.
+ * Steps that already exist are UPDATED rather than replaced. Deleting and
+ * recreating them was simpler, but it issued every step a new id on every
+ * save, so a validation error could no longer be matched to the box that
+ * caused it — the operator got a list of problems and no way to tell which
+ * of four steps named "End" was meant.
+ *
+ * Returns the mapping from canvas ids to real ones, so the canvas can adopt
+ * the ids of steps it has just created.
  */
 export async function saveGraph(input: {
   versionId: string;
   steps: StepInput[];
   links: LinkInput[];
-}): Promise<JourneyResult> {
+}): Promise<JourneyResult & { idMap?: Record<string, string> }> {
   const version = await prisma.journeyVersion.findUnique({
     where: { id: input.versionId },
     select: { id: true, status: true, journeyId: true },
@@ -106,36 +111,59 @@ export async function saveGraph(input: {
     };
   }
 
-  // Canvas ids are not database ids until they have been saved once, so the
-  // mapping is rebuilt on every save and the links follow it.
   const idMap = new Map<string, string>();
 
   await prisma.$transaction(async (tx) => {
+    const existing = await tx.journeyStep.findMany({
+      where: { versionId: version.id },
+      select: { id: true },
+    });
+
+    const existingIds = new Set(existing.map((s) => s.id));
+    const keptIds = new Set<string>();
+
+    // Links are rebuilt wholesale. They are cheap, carry no identity of their
+    // own, and reconciling them would be more error-prone than replacing.
     await tx.journeyLink.deleteMany({ where: { versionId: version.id } });
-    await tx.journeyStep.deleteMany({ where: { versionId: version.id } });
 
     for (const step of input.steps) {
-      const created = await tx.journeyStep.create({
-        data: {
-          versionId: version.id,
-          type: step.type,
-          name: step.name.trim() || "Untitled step",
-          config: step.config as Prisma.InputJsonValue,
-          x: Math.round(step.x),
-          y: Math.round(step.y),
-        },
-        select: { id: true },
-      });
+      const isExisting = existingIds.has(step.id);
 
-      idMap.set(step.id, created.id);
+      const data = {
+        type: step.type,
+        name: step.name.trim() || "Untitled step",
+        config: step.config as Prisma.InputJsonValue,
+        x: Math.round(step.x),
+        y: Math.round(step.y),
+      };
+
+      if (isExisting) {
+        await tx.journeyStep.update({ where: { id: step.id }, data });
+        idMap.set(step.id, step.id);
+        keptIds.add(step.id);
+      } else {
+        const created = await tx.journeyStep.create({
+          data: { versionId: version.id, ...data },
+          select: { id: true },
+        });
+
+        idMap.set(step.id, created.id);
+        keptIds.add(created.id);
+      }
+    }
+
+    // Anything the operator removed from the canvas.
+    const removed = [...existingIds].filter((id) => !keptIds.has(id));
+    if (removed.length > 0) {
+      await tx.journeyStep.deleteMany({ where: { id: { in: removed } } });
     }
 
     for (const link of input.links) {
       const from = idMap.get(link.fromStepId);
       const to = idMap.get(link.toStepId);
 
-      // A line drawn to a box that was deleted in the same edit. Dropped
-      // rather than failing the save, since the canvas already shows it gone.
+      // A line to a box deleted in the same edit. Dropped rather than failing
+      // the save, since the canvas already shows it gone.
       if (!from || !to) continue;
 
       await tx.journeyLink.create({
@@ -149,7 +177,12 @@ export async function saveGraph(input: {
     }
   });
 
-  return { ok: true, versionId: version.id, journeyId: version.journeyId };
+  return {
+    ok: true,
+    versionId: version.id,
+    journeyId: version.journeyId,
+    idMap: Object.fromEntries(idMap),
+  };
 }
 
 /** Checks a version without changing anything. */

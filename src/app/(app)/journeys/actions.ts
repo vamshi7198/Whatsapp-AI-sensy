@@ -24,6 +24,8 @@ export interface JourneyState {
   journeyId?: string;
   versionId?: string;
   validation?: ValidationResult;
+  /** Canvas id to saved id, so newly created steps adopt their real ones. */
+  idMap?: Record<string, string>;
 }
 
 export async function createJourneyAction(
@@ -73,7 +75,13 @@ export async function saveGraphAction(input: {
     const validation = await checkJourney(input.versionId);
 
     revalidatePath("/journeys");
-    return { success: "Saved.", validation, versionId: input.versionId };
+
+    return {
+      success: "Saved.",
+      validation,
+      versionId: input.versionId,
+      idMap: result.idMap,
+    };
   } catch (error) {
     if (error instanceof ForbiddenError) {
       return { error: "You do not have permission to edit journeys." };
