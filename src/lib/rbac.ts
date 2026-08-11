@@ -38,6 +38,9 @@ export type Permission =
   // Automations
   | "automation:view"
   | "automation:manage"
+  // Flows — in-chat forms
+  | "flow:view"
+  | "flow:manage"
   // Reports
   | "report:view"
   | "report:export"
@@ -80,6 +83,8 @@ const ROLE_PERMISSIONS: Record<Role, ReadonlySet<Permission>> = {
     "template:create",
     "automation:view",
     "automation:manage",
+    "flow:view",
+    "flow:manage",
     "report:view",
     "report:export",
     "settings:view",
@@ -112,6 +117,10 @@ const ROLE_PERMISSIONS: Record<Role, ReadonlySet<Permission>> = {
     "template:view",
     "template:sync",
     "template:create",
+    // A form is a campaign tool, and a manager already creates templates and
+    // sends campaigns, so withholding it would be arbitrary.
+    "flow:view",
+    "flow:manage",
     "report:view",
     "report:export",
     "settings:business",

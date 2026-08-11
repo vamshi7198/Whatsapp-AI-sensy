@@ -86,6 +86,25 @@ export interface SendMediaInput {
   filename?: string;
 }
 
+/** Sending an in-chat form. Only valid inside the 24-hour window. */
+export interface SendFlowInput {
+  to: string;
+  /** Meta's id for the form, not ours. */
+  externalFlowId: string;
+  /**
+   * Our token, echoed back on the response. The ONLY link between an answer
+   * and the person who gave it, since the response omits the form's id.
+   */
+  flowToken: string;
+  /** The message shown above the button. */
+  body: string;
+  buttonText: string;
+  header?: string;
+  footer?: string;
+  /** Open an unpublished draft, for testing before publishing for good. */
+  draft?: boolean;
+}
+
 /**
  * Result of a send attempt.
  *

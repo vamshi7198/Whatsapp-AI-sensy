@@ -13,6 +13,7 @@ import type {
   Paginated,
   PhoneNumberProfile,
   ProviderTemplate,
+  SendFlowInput,
   SendMediaInput,
   SendResult,
   SendTemplateInput,
@@ -157,6 +158,49 @@ export class MetaCloudProvider implements WhatsAppProvider {
         link: input.link,
         ...(input.caption ? { caption: input.caption } : {}),
         ...(input.filename ? { filename: input.filename } : {}),
+      },
+    });
+  }
+
+  /**
+   * Sends an in-chat form.
+   *
+   * Only works inside the 24-hour window the customer's own message opened.
+   * Outside it Meta will not deliver a raw interactive message at all, and the
+   * form has to travel on an approved template with a flow button instead —
+   * which is a different call, and a template review.
+   *
+   * flowToken is ours and comes back untouched on the response. Meta defaults
+   * it to the literal string "unused" when omitted, which would make every
+   * response indistinguishable, so it is required here rather than optional.
+   */
+  async sendFlowMessage(input: SendFlowInput): Promise<SendResult> {
+    return this.send({
+      messaging_product: "whatsapp",
+      recipient_type: "individual",
+      to: toRecipient(input.to),
+      type: "interactive",
+      interactive: {
+        type: "flow",
+        ...(input.header ? { header: { type: "text", text: input.header } } : {}),
+        body: { text: input.body },
+        ...(input.footer ? { footer: { text: input.footer } } : {}),
+        action: {
+          name: "flow",
+          parameters: {
+            // Meta requires the string "3" here. It is the version of the
+            // flow MESSAGE, unrelated to the Flow JSON version.
+            flow_message_version: "3",
+            flow_token: input.flowToken,
+            flow_id: input.externalFlowId,
+            flow_cta: input.buttonText,
+            // A draft can be opened for testing before anything is published,
+            // which matters because publishing cannot be undone.
+            mode: input.draft ? "draft" : "published",
+            flow_action: "navigate",
+            flow_action_payload: { screen: "FORM" },
+          },
+        },
       },
     });
   }

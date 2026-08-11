@@ -4,6 +4,7 @@ import type { MessageStatus, Prisma } from "@prisma/client";
 
 import { runAutomationsForInbound } from "../automations/engine";
 import { recordMessageCost } from "../campaigns/pricing";
+import { recordFlowResponse } from "../flows/service";
 import { prisma } from "../db";
 import { maskPhone, moduleLogger } from "../logger";
 import { getInboundOptIn, getOptOutKeywords } from "../settings";
@@ -296,6 +297,25 @@ async function applyInboundMessage(
 
   await handleOptOutKeyword(event, contact.id);
   await recordCampaignReply(contact.id, event.timestamp);
+
+  // A completed in-chat form. Filed against the send it came from, which is
+  // the only way to know who it belongs to — Meta does not include the form's
+  // id in the response, only the token we generated when sending.
+  if (event.flowResponse) {
+    await recordFlowResponse({
+      token: event.flowResponse.flowToken,
+      contactId: contact.id,
+      answers: event.flowResponse.answers,
+      wamid: event.externalMessageId,
+    }).catch((error) => {
+      // The answers are already on the stored message either way, so a
+      // failure here loses nothing that cannot be recovered.
+      log.error(
+        { err: error instanceof Error ? error.message : error },
+        "Could not file a form response",
+      );
+    });
+  }
 
   log.info(
     { from: maskPhone(event.from), type: event.type },
