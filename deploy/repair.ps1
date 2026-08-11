@@ -104,7 +104,8 @@ if (-not (Test-Path $nextBin)) {
 }
 
 if ($task) {
-    Write-Host "      Startup task already exists."
+    Write-Host "      Startup task already exists - re-registering it so its"
+    Write-Host "      settings are known good."
 } else {
     Write-Host "      Startup task is MISSING - this is why it does not come back" -ForegroundColor Yellow
     Write-Host "      after a reboot. Creating it now..." -ForegroundColor Yellow
@@ -123,6 +124,12 @@ $action = New-ScheduledTaskAction `
 
 # At startup, so it returns after a reboot with nobody logged in.
 $trigger = New-ScheduledTaskTrigger -AtStartup
+
+# Wait a minute before starting. "At startup" fires very early — often before
+# networking and PostgreSQL are ready — and an app that starts into a machine
+# with no database can exit before Windows would ever retry it. A minute costs
+# nothing and removes a whole class of "it did not come back" failures.
+$trigger.Delay = "PT1M"
 
 $principal = New-ScheduledTaskPrincipal `
     -UserId "SYSTEM" -LogonType ServiceAccount -RunLevel Highest
