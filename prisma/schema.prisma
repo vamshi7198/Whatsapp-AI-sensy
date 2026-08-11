@@ -160,6 +160,7 @@ model User {
   messagesSent       Message[]      @relation("MessageSentBy")
   automations        Automation[]
   imports            ImportJob[]
+  flows              Flow[]
 
   @@index([role])
   @@index([isActive])
@@ -221,6 +222,8 @@ model Contact {
   conversation       Conversation?
   optOuts            OptOut[]
   automationRuns     AutomationRun[]
+  flowSends          FlowSend[]
+  flowResponses      FlowResponse[]
 
   @@index([phoneE164])
   @@index([createdAt])
@@ -634,6 +637,112 @@ model AppSetting {
 
 /// Pricing is data, never code. Versioned by effectiveFrom so a Meta price
 /// change does not retroactively rewrite the cost of past campaigns.
+// ---------------------------------------------------------------------------
+// Flows — in-chat forms
+// ---------------------------------------------------------------------------
+
+enum FlowStatus {
+  DRAFT
+  PUBLISHED
+  DEPRECATED
+}
+
+/// An in-chat form.
+///
+/// Meta will not let a published Flow be edited or deleted — deprecating it is
+/// the only way out — so a change means publishing a NEW flow with a new id.
+/// Rows are therefore versioned rather than updated, and `version` counts up
+/// within a `family` so the history of one logical form stays readable.
+model Flow {
+  id String @id @default(cuid())
+
+  /// Meta's own id. Absent until the flow has been created at Meta.
+  externalFlowId String? @unique
+  name           String
+  /// Groups the versions of one logical form together.
+  family         String
+  version        Int     @default(1)
+
+  status FlowStatus @default(DRAFT)
+  /// One of Meta's categories, e.g. SURVEY or CONTACT_US.
+  category String
+
+  /// The screen definition sent to Meta, kept so a version can be reproduced.
+  flowJson Json
+  /// Which Flow JSON version this was authored against. Meta rejects a value
+  /// it does not support, and the supported set moves, so it is recorded per
+  /// flow rather than assumed globally.
+  jsonVersion String
+
+  publishedAt   DateTime?
+  deprecatedAt  DateTime?
+  createdById   String?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  createdBy User?          @relation(fields: [createdById], references: [id], onDelete: SetNull)
+  sends     FlowSend[]
+  responses FlowResponse[]
+
+  @@unique([family, version])
+  @@index([status])
+  @@index([family])
+}
+
+/// One dispatch of a flow to one person.
+///
+/// Exists because a flow response does NOT carry the flow's id — only a token
+/// we generated at send time. Without this row a completed form cannot be
+/// attributed to anyone.
+model FlowSend {
+  id     String @id @default(cuid())
+  flowId String
+  /// The token echoed back by Meta. Random and unguessable: it is the only
+  /// link between a response and a person.
+  token  String @unique
+
+  contactId String
+  /// Set when the flow was sent as part of a campaign.
+  campaignId String?
+  /// The outbound WhatsApp message id, once Meta accepts it.
+  wamid      String?
+
+  sentAt   DateTime  @default(now())
+  answeredAt DateTime?
+
+  flow     Flow          @relation(fields: [flowId], references: [id], onDelete: Cascade)
+  contact  Contact       @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  response FlowResponse?
+
+  @@index([flowId, sentAt])
+  @@index([contactId])
+  @@index([campaignId])
+}
+
+/// What somebody filled in.
+model FlowResponse {
+  id     String @id @default(cuid())
+  flowId String
+  /// Null when a response arrives with a token we have no record of — kept
+  /// rather than discarded, because a real customer did fill this in.
+  sendId String? @unique
+
+  contactId String
+  /// The answers exactly as Meta sent them, before any interpretation.
+  answers   Json
+  /// The inbound WhatsApp message the response arrived on.
+  wamid     String? @unique
+
+  receivedAt DateTime @default(now())
+
+  flow    Flow      @relation(fields: [flowId], references: [id], onDelete: Cascade)
+  send    FlowSend? @relation(fields: [sendId], references: [id], onDelete: SetNull)
+  contact Contact   @relation(fields: [contactId], references: [id], onDelete: Cascade)
+
+  @@index([flowId, receivedAt])
+  @@index([contactId])
+}
+
 model PricingRate {
   id             String           @id @default(cuid())
   /// ISO-3166 alpha-2, or "*" for the fallback rate.

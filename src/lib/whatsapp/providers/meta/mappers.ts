@@ -144,8 +144,16 @@ interface MetaWebhookPayload {
           text?: { body?: string };
           button?: { text?: string };
           interactive?: {
+            type?: string;
             button_reply?: { title?: string };
             list_reply?: { title?: string };
+            // A completed Flow. response_json is a STRING of JSON, not an
+            // object, and carries the answers the customer filled in.
+            nfm_reply?: {
+              name?: string;
+              body?: string;
+              response_json?: string;
+            };
           };
         }>;
         statuses?: Array<{
@@ -191,12 +199,78 @@ function extractText(
     ? M
     : never,
 ): string | undefined {
+  const flowReply = message.interactive?.nfm_reply;
+
+  if (flowReply) {
+    // Meta's own body here is the literal word "Sent", which tells an operator
+    // nothing. Summarising the answers gives the inbox something readable
+    // while the full response is kept on the message payload.
+    return summariseFlowResponse(flowReply.response_json) ?? "Form completed";
+  }
+
   return (
     message.text?.body ??
     message.button?.text ??
     message.interactive?.button_reply?.title ??
     message.interactive?.list_reply?.title
   );
+}
+
+/**
+ * Reads the answers out of a completed Flow.
+ *
+ * response_json is a STRING of JSON, and its shape is whatever the Flow's own
+ * screens defined, so nothing about it can be assumed. Anything unparseable
+ * returns undefined and the caller carries on — a malformed response must
+ * never cost us the message it arrived on.
+ */
+export function parseFlowResponse(
+  responseJson: string | undefined,
+): Record<string, unknown> | undefined {
+  if (!responseJson) return undefined;
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(responseJson);
+  } catch {
+    return undefined;
+  }
+
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    return undefined;
+  }
+
+  return parsed as Record<string, unknown>;
+}
+
+/**
+ * Turns a Flow's answers into one readable line for the inbox.
+ */
+export function summariseFlowResponse(
+  responseJson: string | undefined,
+): string | undefined {
+  const parsed = parseFlowResponse(responseJson);
+  if (!parsed) return undefined;
+
+  const parts: string[] = [];
+
+  for (const [key, value] of Object.entries(parsed)) {
+    // Meta adds its own bookkeeping fields; they are not answers.
+    if (key === "flow_token" || key.startsWith("__")) continue;
+
+    const rendered = Array.isArray(value)
+      ? value.join(", ")
+      : typeof value === "object"
+        ? undefined
+        : String(value);
+
+    if (rendered === undefined || rendered === "") continue;
+
+    // Screen field names are snake_case identifiers; make them readable.
+    parts.push(`${key.replace(/_/g, " ")}: ${rendered}`);
+  }
+
+  return parts.length > 0 ? parts.join(" · ") : undefined;
 }
 
 export function parseMetaWebhook(payload: unknown): NormalisedWebhookEvent[] {
@@ -214,6 +288,10 @@ export function parseMetaWebhook(payload: unknown): NormalisedWebhookEvent[] {
       for (const message of value.messages ?? []) {
         if (!message.id || !message.from) continue;
 
+        const flowAnswers = parseFlowResponse(
+          message.interactive?.nfm_reply?.response_json,
+        );
+
         events.push({
           kind: "inbound_message",
           externalMessageId: message.id,
@@ -222,6 +300,17 @@ export function parseMetaWebhook(payload: unknown): NormalisedWebhookEvent[] {
           type: message.type ?? "unknown",
           text: extractText(message),
           timestamp: toDate(message.timestamp),
+          ...(flowAnswers
+            ? {
+                flowResponse: {
+                  flowToken:
+                    typeof flowAnswers.flow_token === "string"
+                      ? flowAnswers.flow_token
+                      : undefined,
+                  answers: flowAnswers,
+                },
+              }
+            : {}),
           raw: message,
         });
       }

@@ -183,6 +183,18 @@ export type NormalisedWebhookEvent =
       type: string;
       text?: string;
       timestamp: Date;
+      /**
+       * Set when the customer completed a Flow — an in-chat form.
+       *
+       * The token is ours: we generate it when sending and Meta echoes it
+       * back unchanged. It is the ONLY way to tell which send a response
+       * belongs to, because the response does not carry the Flow's id.
+       */
+      flowResponse?: {
+        flowToken?: string;
+        /** The answers, exactly as Meta sent them. */
+        answers: Record<string, unknown>;
+      };
       raw: unknown;
     }
   | {
