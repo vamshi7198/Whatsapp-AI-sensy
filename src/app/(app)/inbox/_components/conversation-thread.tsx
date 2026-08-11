@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/button";
 import { formatPhoneForDisplay } from "@/lib/contacts/phone";
 import { cn } from "@/lib/utils";
 
+import { sendFlowAction } from "../../flows/actions";
 import { markConversationRead, sendReply } from "../actions";
 
 interface ThreadMessage {
@@ -67,11 +68,14 @@ export function ConversationThread({
   messages,
   window: serviceWindow,
   canSend,
+  forms,
 }: {
   conversation: ConversationSummary;
   messages: ThreadMessage[];
   window: { open: boolean; hoursLeft: number; minutesLeft: number };
   canSend: boolean;
+  /** Forms that can be sent to this person right now. */
+  forms: Array<{ id: string; name: string; status: string }>;
 }) {
   const [error, setError] = useState<string | null>(null);
   const [isPending, startTransition] = useTransition();
@@ -247,6 +251,43 @@ export function ConversationThread({
                 {isPending ? "Sending…" : "Send"}
               </Button>
             </form>
+
+            {/*
+              Forms can only be sent inside the window, so the option belongs
+              here rather than on a toolbar that would sometimes be dead.
+            */}
+            {forms.length > 0 && (
+              <div className="mt-2 flex flex-wrap items-center gap-2">
+                <span className="text-[11px] text-slate-400">Send a form:</span>
+
+                {forms.map((form) => (
+                  <Button
+                    key={form.id}
+                    variant="secondary"
+                    size="sm"
+                    disabled={isPending}
+                    onClick={() => {
+                      setError(null);
+                      const formData = new FormData();
+                      formData.set("flowId", form.id);
+                      formData.set("contactId", conversation.contactId);
+                      formData.set("body", form.name);
+                      formData.set("buttonText", "Open form");
+
+                      startTransition(async () => {
+                        const result = await sendFlowAction({}, formData);
+                        if (result.error) setError(result.error);
+                      });
+                    }}
+                  >
+                    {form.name}
+                    {form.status === "DRAFT" && (
+                      <span className="ml-1 text-[10px] opacity-70">draft</span>
+                    )}
+                  </Button>
+                ))}
+              </div>
+            )}
 
             <p className="mt-1.5 text-center text-[11px] text-slate-400">
               {serviceWindow.hoursLeft > 0

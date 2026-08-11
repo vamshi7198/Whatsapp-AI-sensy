@@ -6,6 +6,7 @@ import {
   getServiceWindow,
   listConversations,
 } from "@/lib/inbox/service";
+import { listSendableFlows } from "@/lib/flows/service";
 import { isMetaConnected } from "@/lib/settings";
 import { cn } from "@/lib/utils";
 
@@ -27,9 +28,12 @@ export default async function InboxPage({
   const unreadOnly = params.unread === "1";
   const selectedId = typeof params.c === "string" ? params.c : undefined;
 
-  const [conversations, connected] = await Promise.all([
+  const [conversations, connected, forms] = await Promise.all([
     listConversations({ search, unreadOnly }),
     isMetaConnected(),
+    // Drafts are included: a form has to be testable on a real phone before
+    // it is published, and publishing cannot be undone.
+    listSendableFlows(),
   ]);
 
   // Back to the list on mobile, keeping whatever search or filter was applied
@@ -120,6 +124,7 @@ export default async function InboxPage({
                 minutesLeft: window.minutesLeft,
               }}
               canSend={connected}
+              forms={forms}
             />
           ) : (
             <InboxEmpty hasConversations={conversations.length > 0} />

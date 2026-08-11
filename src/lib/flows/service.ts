@@ -386,6 +386,21 @@ export async function sendFlowToContact(input: {
   return { ok: true, wamid };
 }
 
+/**
+ * Forms that can be sent right now.
+ *
+ * Drafts are included on purpose: a form has to be openable on a real phone
+ * before it is published, because publishing cannot be undone.
+ */
+export async function listSendableFlows() {
+  return prisma.flow.findMany({
+    where: { status: { in: ["DRAFT", "PUBLISHED"] }, externalFlowId: { not: null } },
+    orderBy: [{ status: "asc" }, { createdAt: "desc" }],
+    take: 10,
+    select: { id: true, name: true, status: true },
+  });
+}
+
 export async function listFlows() {
   return prisma.flow.findMany({
     where: { status: { not: "DEPRECATED" } },
