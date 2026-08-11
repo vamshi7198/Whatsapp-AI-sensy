@@ -60,6 +60,12 @@ export const NAV_ITEMS: NavItem[] = [
     permission: "automation:view",
   },
   {
+    label: "Journeys",
+    href: "/journeys",
+    icon: "Workflow",
+    permission: "journey:view",
+  },
+  {
     label: "Forms",
     href: "/flows",
     icon: "ClipboardList",

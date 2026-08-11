@@ -41,6 +41,9 @@ export type Permission =
   // Flows — in-chat forms
   | "flow:view"
   | "flow:manage"
+  // Journeys — branching conversations
+  | "journey:view"
+  | "journey:manage"
   // Reports
   | "report:view"
   | "report:export"
@@ -85,6 +88,8 @@ const ROLE_PERMISSIONS: Record<Role, ReadonlySet<Permission>> = {
     "automation:manage",
     "flow:view",
     "flow:manage",
+    "journey:view",
+    "journey:manage",
     "report:view",
     "report:export",
     "settings:view",
@@ -121,6 +126,8 @@ const ROLE_PERMISSIONS: Record<Role, ReadonlySet<Permission>> = {
     // sends campaigns, so withholding it would be arbitrary.
     "flow:view",
     "flow:manage",
+    "journey:view",
+    "journey:manage",
     "report:view",
     "report:export",
     "settings:business",
