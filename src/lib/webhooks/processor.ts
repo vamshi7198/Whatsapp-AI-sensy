@@ -80,6 +80,15 @@ export interface StoreResult {
 export async function storeWebhookEvents(
   events: NormalisedWebhookEvent[],
   signatureValid: boolean,
+  /**
+   * The whole webhook body, exactly as Meta sent it.
+   *
+   * Stored rather than the single event's inner object, because recovery has
+   * to re-parse this and the parser needs the full envelope. Storing only the
+   * inner message made recovery silently find nothing — the payload was
+   * there, but unreadable by the only thing that would ever read it.
+   */
+  rawPayload?: unknown,
 ): Promise<StoreResult> {
   const stored: NormalisedWebhookEvent[] = [];
   let duplicates = 0;
@@ -91,7 +100,7 @@ export async function storeWebhookEvents(
           dedupeKey: buildDedupeKey(event),
           eventType: event.kind,
           wamid: "externalMessageId" in event ? event.externalMessageId : null,
-          payload: event.raw as Prisma.InputJsonValue,
+          payload: (rawPayload ?? event.raw) as Prisma.InputJsonValue,
           signatureValid,
         },
       ],
@@ -188,7 +197,32 @@ export async function recoverUnprocessedEvents(): Promise<ProcessResult> {
     "Found stored events that were never applied — recovering",
   );
 
-  const events = pending.flatMap((row) => parseMetaWebhook(row.payload));
+  // Only the events actually awaiting work. One stored payload can contain
+  // several events, and the others already ran — re-applying them would be
+  // harmless but wasteful, and would make the recovered count a lie.
+  const wanted = new Set(pending.map((row) => row.dedupeKey));
+  const seen = new Set<string>();
+  const events: NormalisedWebhookEvent[] = [];
+
+  for (const row of pending) {
+    for (const event of parseMetaWebhook(row.payload)) {
+      const key = buildDedupeKey(event);
+      if (!wanted.has(key) || seen.has(key)) continue;
+      seen.add(key);
+      events.push(event);
+    }
+  }
+
+  if (events.length < pending.length) {
+    // Rows written before the payload fix hold only the inner message, which
+    // this parser cannot read. Nothing is lost — the row is still there — but
+    // it cannot be replayed, and saying so is better than a silent zero.
+    log.warn(
+      { pending: pending.length, readable: events.length },
+      "Some stored events could not be re-read and were not recovered",
+    );
+  }
+
   return applyStoredEvents(events);
 }
 

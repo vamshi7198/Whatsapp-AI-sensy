@@ -161,6 +161,8 @@ model User {
   automations        Automation[]
   imports            ImportJob[]
   flows              Flow[]
+  journeys           Journey[]
+  journeyVersions    JourneyVersion[] @relation("JourneyVersionAuthor")
 
   @@index([role])
   @@index([isActive])
@@ -224,6 +226,7 @@ model Contact {
   automationRuns     AutomationRun[]
   flowSends          FlowSend[]
   flowResponses      FlowResponse[]
+  journeySessions    JourneySession[]
 
   @@index([phoneE164])
   @@index([createdAt])
@@ -637,6 +640,256 @@ model AppSetting {
 
 /// Pricing is data, never code. Versioned by effectiveFrom so a Meta price
 /// change does not retroactively rewrite the cost of past campaigns.
+// ---------------------------------------------------------------------------
+// Journeys — branching conversations
+//
+// Distinct from Flow below, which is Meta's in-chat form product. A journey is
+// ours: a graph of steps the customer walks through, where a tapped button
+// decides what comes next. Named apart deliberately, because two features
+// called "flows" would confuse everyone including the code.
+// ---------------------------------------------------------------------------
+
+enum JourneyStatus {
+  DRAFT
+  PUBLISHED
+  PAUSED
+  ARCHIVED
+}
+
+enum JourneyStepType {
+  START
+  SEND_TEMPLATE
+  SEND_MESSAGE
+  ASK_QUESTION
+  CONDITION
+  SEND_MEDIA
+  ADD_TAG
+  REMOVE_TAG
+  UPDATE_CONTACT
+  WAIT
+  WEBHOOK
+  HANDOFF
+  END
+}
+
+enum JourneyTriggerType {
+  MANUAL
+  KEYWORD
+  ANY_MESSAGE
+  TAG_ADDED
+  CAMPAIGN
+  BUTTON_REPLY
+}
+
+enum JourneySessionStatus {
+  ACTIVE
+  WAITING_FOR_REPLY
+  WAITING_UNTIL
+  HANDED_OFF
+  COMPLETED
+  FAILED
+  CANCELLED
+}
+
+/// One logical conversation, e.g. "Pilot Sampling". Holds versions, not steps.
+model Journey {
+  id          String  @id @default(cuid())
+  name        String
+  description String?
+
+  /// The version customers currently enter. Null until one is published.
+  liveVersionId String? @unique
+
+  createdById String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  archivedAt  DateTime?
+
+  createdBy User?            @relation(fields: [createdById], references: [id], onDelete: SetNull)
+  versions  JourneyVersion[]
+  sessions  JourneySession[]
+
+  @@index([archivedAt])
+}
+
+/// A snapshot of the graph.
+///
+/// Editing a published journey creates a NEW version rather than changing the
+/// running one, so the people already midway through keep the conversation
+/// they started. Steps and links belong to a version, never to the journey.
+model JourneyVersion {
+  id        String        @id @default(cuid())
+  journeyId String
+  version   Int
+  status    JourneyStatus @default(DRAFT)
+
+  publishedAt DateTime?
+  createdById String?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  journey   Journey          @relation(fields: [journeyId], references: [id], onDelete: Cascade)
+  createdBy User?            @relation("JourneyVersionAuthor", fields: [createdById], references: [id], onDelete: SetNull)
+  steps     JourneyStep[]
+  links     JourneyLink[]
+  triggers  JourneyTrigger[]
+  sessions  JourneySession[]
+
+  @@unique([journeyId, version])
+  @@index([status])
+}
+
+/// A node on the canvas.
+model JourneyStep {
+  id        String          @id @default(cuid())
+  versionId String
+  type      JourneyStepType
+
+  /// Shown on the canvas and in errors, e.g. "Ask why not interested".
+  name String
+
+  /// Everything type-specific: message text, template id, buttons, condition,
+  /// wait duration. Shape depends on type and is validated before publishing.
+  config Json
+
+  /// Canvas position. Presentation only — the graph is the links.
+  x Int @default(0)
+  y Int @default(0)
+
+  version   JourneyVersion @relation(fields: [versionId], references: [id], onDelete: Cascade)
+  linksFrom JourneyLink[]  @relation("LinkFrom")
+  linksTo   JourneyLink[]  @relation("LinkTo")
+  sessions  JourneySession[]
+  runs      JourneyStepRun[]
+
+  @@index([versionId])
+  @@index([versionId, type])
+}
+
+/// An arrow between two steps.
+///
+/// optionId is what makes branching data rather than code: it is the id of the
+/// button or menu row that leads down this arrow. Null means "carry straight
+/// on", used by steps that do not ask anything.
+model JourneyLink {
+  id         String  @id @default(cuid())
+  versionId  String
+  fromStepId String
+  optionId   String?
+  toStepId   String
+
+  version  JourneyVersion @relation(fields: [versionId], references: [id], onDelete: Cascade)
+  fromStep JourneyStep    @relation("LinkFrom", fields: [fromStepId], references: [id], onDelete: Cascade)
+  toStep   JourneyStep    @relation("LinkTo", fields: [toStepId], references: [id], onDelete: Cascade)
+
+  /// One arrow per option. Two arrows from the same button would make the
+  /// next step ambiguous, which is a drawing mistake rather than a choice.
+  @@unique([fromStepId, optionId])
+  @@index([versionId])
+  @@index([toStepId])
+}
+
+/// What starts a journey.
+model JourneyTrigger {
+  id        String             @id @default(cuid())
+  versionId String
+  type      JourneyTriggerType
+  /// Keywords, tag id, campaign id — depends on type.
+  config    Json
+  isActive  Boolean            @default(true)
+
+  createdAt DateTime @default(now())
+
+  version JourneyVersion @relation(fields: [versionId], references: [id], onDelete: Cascade)
+
+  @@index([versionId])
+  @@index([type, isActive])
+}
+
+/// One customer's progress through one journey.
+model JourneySession {
+  id        String @id @default(cuid())
+  journeyId String
+  /// Pinned at entry. An edit publishes a new version; this session does not
+  /// move to it, so the conversation the customer started is the one they
+  /// finish.
+  versionId String
+  contactId String
+
+  currentStepId String?
+  status        JourneySessionStatus @default(ACTIVE)
+
+  /// Answers and values gathered so far, available to later steps as
+  /// variables.
+  context Json @default("{}")
+
+  /// Set by a WAIT step. The scheduler wakes sessions whose time has come.
+  resumeAt DateTime?
+
+  /// Why it ended, for the operator rather than for the code.
+  endedReason String?
+
+  startedAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  completedAt DateTime?
+
+  journey     Journey          @relation(fields: [journeyId], references: [id], onDelete: Cascade)
+  version     JourneyVersion   @relation(fields: [versionId], references: [id], onDelete: Cascade)
+  contact     Contact          @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  currentStep JourneyStep?     @relation(fields: [currentStepId], references: [id], onDelete: SetNull)
+  runs        JourneyStepRun[]
+  events      JourneyEvent[]
+
+  /// A contact can only be in a given journey once at a time. Entering twice
+  /// would have two conversations talking over each other.
+  @@unique([journeyId, contactId])
+  @@index([status])
+  @@index([status, resumeAt])
+  @@index([contactId])
+  @@index([versionId])
+}
+
+/// An external event this session has already acted on.
+///
+/// The idempotency record. Meta retries webhooks, so the same tap arrives more
+/// than once; the unique constraint is what stops the second copy advancing
+/// the conversation a second time and messaging the customer twice.
+model JourneyEvent {
+  id        String @id @default(cuid())
+  sessionId String
+  /// The WhatsApp message id, or another provider's event id.
+  externalId String
+  kind       String
+
+  createdAt DateTime @default(now())
+
+  session JourneySession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@unique([sessionId, externalId])
+  @@index([sessionId, createdAt])
+}
+
+/// One execution of one step, for the operator's execution log.
+model JourneyStepRun {
+  id        String @id @default(cuid())
+  sessionId String
+  stepId    String
+
+  status String
+  error  String?
+
+  /// The message this step sent, when it sent one.
+  wamid String?
+
+  createdAt DateTime @default(now())
+
+  session JourneySession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  step    JourneyStep    @relation(fields: [stepId], references: [id], onDelete: Cascade)
+
+  @@index([sessionId, createdAt])
+  @@index([stepId])
+}
+
 // ---------------------------------------------------------------------------
 // Flows — in-chat forms
 // ---------------------------------------------------------------------------

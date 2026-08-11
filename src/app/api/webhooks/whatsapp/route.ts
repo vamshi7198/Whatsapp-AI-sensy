@@ -125,7 +125,9 @@ export async function POST(request: Request) {
   // inside the time Meta allows before it treats the response as failed.
   let stored: typeof events = [];
   try {
-    const result = await storeWebhookEvents(events, true);
+    // The whole body is stored, not each event's inner object, so recovery
+    // can re-parse it later. The parser needs the full envelope.
+    const result = await storeWebhookEvents(events, true, payload);
     stored = result.stored;
 
     if (result.duplicates > 0) {
