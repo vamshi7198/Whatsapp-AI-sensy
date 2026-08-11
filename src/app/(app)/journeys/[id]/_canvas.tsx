@@ -25,7 +25,7 @@ import { publishJourneyAction, saveGraphAction, testJourneyAction } from "../act
 import { StepSettings } from "./_settings";
 import {
   STEP_LIBRARY,
-  optionsOf,
+  branchOptionsOf,
   type StepKind,
   type StepModel,
 } from "./_steps";
@@ -60,7 +60,7 @@ type StepNode = Node<{ step: StepModel; problem?: string }>;
 function StepBox({ data, selected }: NodeProps<StepNode>) {
   const { step, problem } = data;
   const meta = STEP_LIBRARY[step.type];
-  const options = optionsOf(step);
+  const options = branchOptionsOf(step);
 
   return (
     <div
@@ -223,7 +223,9 @@ function Canvas(props: CanvasProps) {
       id,
       type,
       name: meta.label,
-      config: { ...meta.defaultConfig },
+      // Deep copy: a shallow spread would leave every new step of the same
+      // kind sharing one options array with the template it came from.
+      config: structuredClone(meta.defaultConfig),
       x: 260 + (nodes.length % 4) * 300,
       y: 80 + Math.floor(nodes.length / 4) * 220,
       preview: "",

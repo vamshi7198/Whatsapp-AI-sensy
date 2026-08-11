@@ -139,7 +139,13 @@ export interface StepOptionModel {
   description?: string;
 }
 
-/** The choices a step offers, used to draw one outgoing point per choice. */
+/**
+ * Every option on a step, including ones still being typed.
+ *
+ * Used by the settings panel. A newly added option has no label yet, and
+ * filtering those out here would delete the row the moment it appeared —
+ * leaving nothing to type into.
+ */
 export function optionsOf(step: StepModel): StepOptionModel[] {
   if (step.type === "CONDITION") {
     return [
@@ -153,15 +159,24 @@ export function optionsOf(step: StepModel): StepOptionModel[] {
   const raw = step.config.options;
   if (!Array.isArray(raw)) return [];
 
-  return raw
-    .filter(
-      (o): o is StepOptionModel =>
-        Boolean(o) &&
-        typeof o === "object" &&
-        typeof (o as StepOptionModel).id === "string" &&
-        typeof (o as StepOptionModel).label === "string",
-    )
-    .filter((o) => o.id && o.label);
+  return raw.filter(
+    (o): o is StepOptionModel =>
+      Boolean(o) &&
+      typeof o === "object" &&
+      typeof (o as StepOptionModel).id === "string" &&
+      typeof (o as StepOptionModel).label === "string",
+  );
+}
+
+/**
+ * Only the options complete enough to branch on.
+ *
+ * Used for the connection points on the canvas: a blank option has nothing
+ * to show the customer and nowhere sensible to lead, so it gets no dot until
+ * it has been named.
+ */
+export function branchOptionsOf(step: StepModel): StepOptionModel[] {
+  return optionsOf(step).filter((o) => o.id && o.label.trim());
 }
 
 /** A stable id from a label, so branches survive a rewording. */
