@@ -3,13 +3,18 @@
 import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 
+import { runTemplateSync } from "./actions";
+
 /**
- * Refreshes the page while templates are awaiting Meta's decision.
+ * Keeps the page current while templates await Meta's decision.
  *
- * Meta pushes status changes to our webhook, so the database updates on its
- * own — but a server-rendered page will not show that until it is re-fetched.
- * This polls only while something is actually pending, and stops once
- * everything has been decided, so an idle Templates page costs nothing.
+ * Asks META, not just our own database. Refreshing alone only re-read what we
+ * already had, and that only changes when Meta pushes a status webhook — so
+ * if that webhook never arrived, the page would poll forever and show the
+ * same "waiting" indefinitely while Meta had long since decided.
+ *
+ * Polls only while something is pending, and stops once everything has been
+ * decided, so an idle Templates page costs nothing.
  */
 export function AutoRefreshWhilePending({
   pendingCount,
@@ -24,20 +29,29 @@ export function AutoRefreshWhilePending({
   useEffect(() => {
     if (pendingCount === 0) return;
 
-    const timer = setInterval(() => {
+    let cancelled = false;
+
+    const timer = setInterval(async () => {
+      // Pull from Meta first, then re-render from what that wrote.
+      await runTemplateSync().catch(() => undefined);
+      if (cancelled) return;
+
       router.refresh();
       // Called from a timer, not during render, so this is safe.
       setCheckedAt(new Date());
     }, intervalMs);
 
-    return () => clearInterval(timer);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
   }, [pendingCount, intervalMs, router]);
 
   if (pendingCount === 0) return null;
 
   return (
     <p className="text-xs text-slate-400">
-      Checking WhatsApp for approval updates automatically
+      Asking WhatsApp for approval updates every 15 seconds
       {checkedAt &&
         ` · last checked ${new Intl.DateTimeFormat("en-IN", {
           hour: "2-digit",
