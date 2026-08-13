@@ -12,6 +12,7 @@ import { formatNumber } from "@/lib/utils";
 import {
   createJourneyAction,
   startForAudienceAction,
+  toggleJourneyAction,
   type JourneyState,
 } from "./actions";
 
@@ -22,6 +23,7 @@ interface JourneyRow {
   isLive: boolean;
   liveVersion: number | null;
   hasDraft: boolean;
+  isActive: boolean;
   createdBy: string | null;
   total: number;
   waiting: number;
@@ -157,6 +159,10 @@ export function JourneyList({
                       {journey.isLive ? `Live · v${journey.liveVersion}` : "Draft"}
                     </Badge>
 
+                    {journey.isLive && !journey.isActive && (
+                      <Badge tone="amber">Switched off</Badge>
+                    )}
+
                     {journey.isLive && journey.hasDraft && (
                       <Badge tone="amber">Unpublished changes</Badge>
                     )}
@@ -196,7 +202,24 @@ export function JourneyList({
                 </div>
 
                 <div className="flex shrink-0 gap-2">
-                  {journey.isLive && canSend && (
+                  {journey.isLive && canManage && (
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      disabled={isPending}
+                      onClick={() => {
+                        const formData = new FormData();
+                        formData.set("journeyId", journey.id);
+                        formData.set("isActive", journey.isActive ? "" : "on");
+                        startTransition(async () => {
+                          setState(await toggleJourneyAction({}, formData));
+                        });
+                      }}
+                    >
+                      {journey.isActive ? "Switch off" : "Switch on"}
+                    </Button>
+                  )}
+                  {journey.isLive && journey.isActive && canSend && (
                     <Button
                       size="sm"
                       onClick={() =>

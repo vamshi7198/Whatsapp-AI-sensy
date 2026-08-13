@@ -20,9 +20,15 @@ import "@xyflow/react/dist/style.css";
 import { useCallback, useMemo, useRef, useState, useTransition } from "react";
 
 import { Button } from "@/components/ui/button";
+import { Input, Select } from "@/components/ui/field";
 import type { ValidationResult } from "@/lib/journeys/validate";
 
-import { publishJourneyAction, saveGraphAction, testJourneyAction } from "../actions";
+import {
+  publishJourneyAction,
+  saveGraphAction,
+  saveTriggersAction,
+  testJourneyAction,
+} from "../actions";
 import { StepSettings } from "./_settings";
 import {
   STEP_LIBRARY,
@@ -49,6 +55,9 @@ interface CanvasProps {
   initialLinks: Array<{ fromStepId: string; optionId: string | null; toStepId: string }>;
   initialValidation: ValidationResult;
   templates: Array<{ id: string; name: string; category: string }>;
+  /** What currently starts it: manual, keyword or any. */
+  initialTriggerMode: string;
+  initialTriggerKeywords: string;
   tags: Array<{ id: string; name: string }>;
 }
 
@@ -162,6 +171,10 @@ function Canvas(props: CanvasProps) {
   const [testPhone, setTestPhone] = useState("");
   const newStepCount = useRef(0);
   const { setCenter } = useReactFlow();
+  const [triggerMode, setTriggerMode] = useState(props.initialTriggerMode);
+  const [triggerKeywords, setTriggerKeywords] = useState(
+    props.initialTriggerKeywords,
+  );
 
   /** Problems keyed by step, so a box can show its own. */
   const problems = useMemo(() => {
@@ -479,9 +492,74 @@ function Canvas(props: CanvasProps) {
               onDelete={() => deleteStep(selected.id)}
             />
           ) : (
-            <p className="text-sm text-slate-500 dark:text-slate-400">
-              Click a step to change it, or add one from the left.
-            </p>
+            <>
+              <p className="text-sm text-slate-500 dark:text-slate-400">
+                Click a step to change it, or add one from the left.
+              </p>
+
+              {/* What starts it. Shown when nothing is selected, because it
+                  belongs to the journey rather than to any one step. */}
+              <form
+                action={(formData) => {
+                  formData.set("versionId", props.versionId);
+                  startTransition(async () => {
+                    setState(await saveTriggersAction({}, formData));
+                  });
+                }}
+                className="mt-5 space-y-3 border-t border-slate-100 pt-4 dark:border-slate-800"
+              >
+                <p className="text-sm font-medium text-slate-700 dark:text-slate-300">
+                  What starts this journey?
+                </p>
+
+                <Select
+                  name="triggerMode"
+                  value={triggerMode}
+                  onChange={(e) => setTriggerMode(e.target.value)}
+                  aria-label="What starts this journey"
+                >
+                  <option value="manual">Only when I send it</option>
+                  <option value="keyword">When someone messages a word</option>
+                  <option value="any">Any message from someone new</option>
+                </Select>
+
+                {triggerMode === "keyword" && (
+                  <>
+                    <Input
+                      name="keywords"
+                      value={triggerKeywords}
+                      onChange={(e) => setTriggerKeywords(e.target.value)}
+                      placeholder="sample, free sample"
+                      aria-label="Words that start this journey"
+                    />
+                    <Select name="matchType" defaultValue="contains">
+                      <option value="contains">
+                        Their message mentions one of these
+                      </option>
+                      <option value="exact">
+                        Their message is exactly one of these
+                      </option>
+                    </Select>
+                  </>
+                )}
+
+                {triggerMode === "any" && (
+                  <p className="rounded-lg bg-amber-50 px-2 py-1.5 text-xs text-amber-800 dark:bg-amber-950 dark:text-amber-300">
+                    Every message from someone not already in a journey starts
+                    this one. Use it for a single welcome journey, not alongside
+                    others.
+                  </p>
+                )}
+
+                <Button type="submit" variant="secondary" size="sm" disabled={isPending}>
+                  Save what starts it
+                </Button>
+
+                <p className="text-xs text-slate-400">
+                  Takes effect once the journey is published and switched on.
+                </p>
+              </form>
+            </>
           )}
 
           {/*

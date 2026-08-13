@@ -6,6 +6,7 @@ import { runAutomationsForInbound } from "../automations/engine";
 import { recordMessageCost } from "../campaigns/pricing";
 import { recordFlowResponse } from "../flows/service";
 import { advanceSession } from "../journeys/engine";
+import { startJourneyFromMessage } from "../journeys/triggers";
 import { prisma } from "../db";
 import { maskPhone, moduleLogger } from "../logger";
 import { getInboundOptIn, getOptOutKeywords } from "../settings";
@@ -405,6 +406,24 @@ async function applyInboundMessage(
   }
 
   if (handledByJourney) return;
+
+  // Nobody mid-journey, so this message might start one. Tried before keyword
+  // auto-replies, because a customer who says "sample" should get the
+  // conversation rather than a one-line reply and a conversation at once.
+  try {
+    const startedJourney = await startJourneyFromMessage({
+      contactId: contact.id,
+      text: event.text ?? null,
+      externalId: event.externalMessageId,
+    });
+
+    if (startedJourney) return;
+  } catch (error) {
+    log.error(
+      { err: error instanceof Error ? error.message : error },
+      "Journey trigger threw — the message itself was still stored",
+    );
+  }
 
   // Last, and deliberately after the opt-out check, so a customer who just
   // said STOP is not answered by a robot. Failures are contained here: an

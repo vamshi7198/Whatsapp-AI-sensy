@@ -73,11 +73,20 @@ export async function startJourney(input: {
 }): Promise<{ ok: boolean; sessionId?: string; error?: string }> {
   const journey = await prisma.journey.findUnique({
     where: { id: input.journeyId },
-    select: { liveVersionId: true, name: true, archivedAt: true },
+    select: { liveVersionId: true, name: true, archivedAt: true, isActive: true },
   });
 
   if (!journey || journey.archivedAt) {
     return { ok: false, error: "That journey no longer exists." };
+  }
+
+  // Switched off. Existing conversations carry on — this only stops new
+  // people entering, which is what an off switch should mean.
+  if (!journey.isActive) {
+    return {
+      ok: false,
+      error: "This journey is switched off, so nobody new can enter it.",
+    };
   }
 
   if (!journey.liveVersionId) {

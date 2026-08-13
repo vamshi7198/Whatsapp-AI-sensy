@@ -151,6 +151,133 @@ export async function newDraftAction(
 }
 
 /**
+ * Sets what starts a journey.
+ *
+ * Replaces the whole set rather than editing individual triggers: there are
+ * only ever a handful, and a diff of them is more ways to go wrong than the
+ * feature is worth.
+ */
+export async function saveTriggersAction(
+  _prev: JourneyState,
+  formData: FormData,
+): Promise<JourneyState> {
+  try {
+    const user = await requireApiAuth("journey:manage");
+
+    const versionId = String(formData.get("versionId") ?? "");
+    const mode = String(formData.get("triggerMode") ?? "manual");
+
+    const keywords = String(formData.get("keywords") ?? "")
+      .split(",")
+      .map((k) => k.trim())
+      .filter(Boolean);
+
+    if (mode === "keyword" && keywords.length === 0) {
+      return { error: "Add at least one word that should start this journey." };
+    }
+
+    await prisma.$transaction(async (tx) => {
+      await tx.journeyTrigger.deleteMany({ where: { versionId } });
+
+      if (mode === "keyword") {
+        await tx.journeyTrigger.create({
+          data: {
+            versionId,
+            type: "KEYWORD",
+            config: {
+              keywords,
+              matchType:
+                formData.get("matchType") === "exact" ? "exact" : "contains",
+            },
+          },
+        });
+      } else if (mode === "any") {
+        await tx.journeyTrigger.create({
+          data: { versionId, type: "ANY_MESSAGE", config: {} },
+        });
+      }
+      // "manual" leaves none, so it starts only when someone sends it.
+    });
+
+    await audit(user, "journey.triggers", {
+      entityType: "Journey",
+      entityId: versionId,
+      metadata: { mode, keywords },
+    });
+
+    revalidatePath("/journeys");
+
+    return {
+      success:
+        mode === "keyword"
+          ? `Saved. Messaging any of: ${keywords.join(", ")} will start this journey.`
+          : mode === "any"
+            ? "Saved. Any incoming message from someone not already in a journey will start this one."
+            : "Saved. This journey starts only when you send it.",
+    };
+  } catch (error) {
+    if (error instanceof ForbiddenError) {
+      return { error: "You do not have permission to change journeys." };
+    }
+    return { error: "Could not save what starts this journey." };
+  }
+}
+
+/**
+ * Turns a journey on or off.
+ *
+ * Not the same as unpublishing. Switching off stops NEW people entering while
+ * leaving everyone already partway through to finish the conversation they
+ * started — which is what someone means when they want a journey to stop.
+ */
+export async function toggleJourneyAction(
+  _prev: JourneyState,
+  formData: FormData,
+): Promise<JourneyState> {
+  try {
+    const user = await requireApiAuth("journey:manage");
+
+    const journeyId = String(formData.get("journeyId") ?? "");
+    const isActive = formData.get("isActive") === "on";
+
+    const journey = await prisma.journey.update({
+      where: { id: journeyId },
+      data: { isActive },
+      select: { name: true },
+    });
+
+    await audit(user, isActive ? "journey.enable" : "journey.disable", {
+      entityType: "Journey",
+      entityId: journeyId,
+      metadata: { name: journey.name },
+    });
+
+    revalidatePath("/journeys");
+
+    const waiting = await prisma.journeySession.count({
+      where: {
+        journeyId,
+        status: { in: ["ACTIVE", "WAITING_FOR_REPLY", "WAITING_UNTIL"] },
+      },
+    });
+
+    return {
+      success: isActive
+        ? `"${journey.name}" is on. New customers can enter it again.`
+        : `"${journey.name}" is off. Nobody new will enter it` +
+          (waiting > 0
+            ? `, and the ${waiting} already partway through will finish normally.`
+            : "."),
+    };
+  } catch (error) {
+    if (error instanceof ForbiddenError) {
+      return { error: "You do not have permission to change journeys." };
+    }
+    return { error: "Could not change that journey." };
+  }
+}
+
+/**
  * Starts a journey for everyone in an audience.
  *
  * The same compliance gate campaigns use, because this messages exactly the

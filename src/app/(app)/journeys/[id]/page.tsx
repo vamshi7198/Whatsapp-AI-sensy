@@ -75,6 +75,20 @@ export default async function JourneyBuilderPage({
   const templateNames = new Map(templates.map((t) => [t.id, t.name]));
   const tagNames = new Map(tags.map((t) => [t.id, t.name]));
 
+  // What currently starts this journey, flattened for the editor. Only one
+  // trigger is offered, because two rules competing to start the same
+  // conversation is confusing rather than powerful.
+  const keywordTrigger = graph.triggers.find((t) => t.type === "KEYWORD");
+  const anyTrigger = graph.triggers.find((t) => t.type === "ANY_MESSAGE");
+
+  const triggerMode = keywordTrigger ? "keyword" : anyTrigger ? "any" : "manual";
+
+  const triggerKeywords = keywordTrigger
+    ? (
+        ((keywordTrigger.config ?? {}) as { keywords?: string[] }).keywords ?? []
+      ).join(", ")
+    : "";
+
   const steps: StepModel[] = graph.steps.map((step) => {
     const config = (step.config ?? {}) as Record<string, unknown>;
 
@@ -114,6 +128,8 @@ export default async function JourneyBuilderPage({
         initialValidation={validation}
         templates={templates}
         tags={tags}
+        initialTriggerMode={triggerMode}
+        initialTriggerKeywords={triggerKeywords}
       />
     </div>
   );

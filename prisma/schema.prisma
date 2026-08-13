@@ -700,6 +700,13 @@ model Journey {
   /// The version customers currently enter. Null until one is published.
   liveVersionId String? @unique
 
+  /// Off switch, separate from publishing.
+  ///
+  /// Unpublishing to stop a journey would lose which version was live and
+  /// strand everyone already partway through. This stops NEW people entering
+  /// while leaving existing conversations to finish.
+  isActive Boolean @default(true)
+
   createdById String?
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt

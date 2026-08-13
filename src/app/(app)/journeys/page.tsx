@@ -50,6 +50,7 @@ export default async function JourneysPage() {
           isLive: Boolean(live),
           liveVersion: live?.version ?? null,
           hasDraft: Boolean(draft),
+          isActive: j.isActive,
           createdBy: j.createdBy?.name ?? null,
           total: j._count.sessions,
           waiting:
