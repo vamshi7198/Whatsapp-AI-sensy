@@ -21,6 +21,7 @@
 param(
     [string]$AppRoot  = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path,
     [string]$NodePath = "C:\Program Files\nodejs\node.exe",
+    [string]$NpmPath  = "C:\Program Files\nodejs\npm.cmd",
     [string]$TaskName = "UncannedWhatsApp",
     [string]$PublicUrl = "https://whatsapp.uncanned.in/login"
 )
@@ -34,7 +35,7 @@ Write-Host ""
 
 # --- 1. Database ----------------------------------------------------------
 
-Write-Host "[1/4] Database" -ForegroundColor Cyan
+Write-Host "[1/5] Database" -ForegroundColor Cyan
 
 $pg = Get-Service -Name "postgresql*" -ErrorAction SilentlyContinue | Select-Object -First 1
 
@@ -59,7 +60,7 @@ Write-Host "      Running, and starts with Windows." -ForegroundColor Green
 # --- 2. The app -----------------------------------------------------------
 
 Write-Host ""
-Write-Host "[2/4] The app" -ForegroundColor Cyan
+Write-Host "[2/5] The app" -ForegroundColor Cyan
 
 if (-not (Test-Path (Join-Path $AppRoot ".next"))) {
     Write-Host "      No build found. Run the update first, then try again." -ForegroundColor Red
@@ -156,10 +157,103 @@ Register-ScheduledTask `
 Start-ScheduledTask -TaskName $TaskName
 Write-Host "      Started, and set to start with Windows." -ForegroundColor Green
 
-# --- 3. Tunnel ------------------------------------------------------------
+# --- 3. Scheduler and backups --------------------------------------------
 
 Write-Host ""
-Write-Host "[3/4] Internet tunnel" -ForegroundColor Cyan
+Write-Host "[3/5] Scheduled work" -ForegroundColor Cyan
+
+# Registers a repeating task, replacing any previous version so its settings
+# are known good rather than whatever a half-finished earlier run left behind.
+function Register-Repeating {
+    param(
+        [string]$Name,
+        [string]$Arguments,
+        [int]$EveryMinutes,
+        [string]$Description
+    )
+
+    $action = New-ScheduledTaskAction -Execute $NpmPath -Argument $Arguments -WorkingDirectory $AppRoot
+
+    $trigger = New-ScheduledTaskTrigger -Once -At (Get-Date) `
+        -RepetitionInterval (New-TimeSpan -Minutes $EveryMinutes)
+
+    # SYSTEM, so it runs with nobody logged in. A campaign scheduled for 7am
+    # must still send while the machine sits at a lock screen.
+    $principal = New-ScheduledTaskPrincipal -UserId "SYSTEM" `
+        -LogonType ServiceAccount -RunLevel Highest
+
+    $settings = New-ScheduledTaskSettingsSet `
+        -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
+        -StartWhenAvailable -MultipleInstances IgnoreNew `
+        -ExecutionTimeLimit (New-TimeSpan -Hours 2)
+
+    if (Get-ScheduledTask -TaskName $Name -ErrorAction SilentlyContinue) {
+        Unregister-ScheduledTask -TaskName $Name -Confirm:$false
+    }
+
+    Register-ScheduledTask -TaskName $Name -Action $action -Trigger $trigger `
+        -Principal $principal -Settings $settings -Description $Description | Out-Null
+}
+
+# Every 5 minutes: sends due campaigns, resumes journeys whose wait has ended,
+# and picks up anything a restart left half-done.
+Register-Repeating -Name "UncannedWhatsAppScheduler" `
+    -Arguments "run scheduler" -EveryMinutes 5 `
+    -Description "Sends scheduled campaigns and resumes waiting conversations."
+
+Write-Host "      Scheduler: every 5 minutes." -ForegroundColor Green
+
+# Daily: a compressed copy of the database. Nobody else is backing this up.
+$backupAction = New-ScheduledTaskAction `
+    -Execute "powershell.exe" `
+    -Argument "-ExecutionPolicy Bypass -File `"$AppRoot\deploy\backup.ps1`"" `
+    -WorkingDirectory $AppRoot
+
+$backupTrigger = New-ScheduledTaskTrigger -Daily -At "02:30"
+
+$backupPrincipal = New-ScheduledTaskPrincipal -UserId "SYSTEM" `
+    -LogonType ServiceAccount -RunLevel Highest
+
+$backupSettings = New-ScheduledTaskSettingsSet `
+    -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
+    -StartWhenAvailable -MultipleInstances IgnoreNew `
+    -ExecutionTimeLimit (New-TimeSpan -Hours 1)
+
+if (Get-ScheduledTask -TaskName "UncannedWhatsAppBackup" -ErrorAction SilentlyContinue) {
+    Unregister-ScheduledTask -TaskName "UncannedWhatsAppBackup" -Confirm:$false
+}
+
+Register-ScheduledTask -TaskName "UncannedWhatsAppBackup" `
+    -Action $backupAction -Trigger $backupTrigger `
+    -Principal $backupPrincipal -Settings $backupSettings `
+    -Description "Daily database backup for Uncanned WhatsApp." | Out-Null
+
+Write-Host "      Backup: daily at 2:30am." -ForegroundColor Green
+
+# Taken now as well, so there is a copy from this moment rather than one
+# starting tomorrow.
+$backupDir = Join-Path $AppRoot "backups"
+$existing = @(Get-ChildItem $backupDir -Filter "*.zip" -ErrorAction SilentlyContinue)
+
+if ($existing.Count -eq 0) {
+    Write-Host "      No backup exists yet - taking one now..." -ForegroundColor Yellow
+    & powershell -ExecutionPolicy Bypass -File (Join-Path $AppRoot "deploy\backup.ps1") | Out-Null
+}
+
+$newest = Get-ChildItem $backupDir -Filter "*.zip" -ErrorAction SilentlyContinue |
+    Sort-Object LastWriteTime -Descending | Select-Object -First 1
+
+if ($newest) {
+    $age = [math]::Round(((Get-Date) - $newest.LastWriteTime).TotalHours, 1)
+    Write-Host "      Newest backup is $age hours old."
+} else {
+    Write-Host "      WARNING: still no backup. Run deploy\backup.ps1 by hand." -ForegroundColor Red
+}
+
+# --- 4. Tunnel ------------------------------------------------------------
+
+Write-Host ""
+Write-Host "[4/5] Internet tunnel" -ForegroundColor Cyan
 
 $cf = Get-Service cloudflared -ErrorAction SilentlyContinue
 
@@ -184,7 +278,7 @@ if (-not $cf) {
 # --- 4. Does it actually answer? ------------------------------------------
 
 Write-Host ""
-Write-Host "[4/4] Checking it answers" -ForegroundColor Cyan
+Write-Host "[5/5] Checking it answers" -ForegroundColor Cyan
 
 $localOk = $false
 for ($i = 1; $i -le 12; $i++) {

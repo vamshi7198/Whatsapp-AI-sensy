@@ -1,8 +1,12 @@
 import "dotenv/config";
 
-import { runDueCampaigns } from "../src/lib/campaigns/sender";
+import {
+  resumeStalledCampaigns,
+  runDueCampaigns,
+} from "../src/lib/campaigns/sender";
 import { prisma } from "../src/lib/db";
 import { resumeDueSessions } from "../src/lib/journeys/engine";
+import { recoverUnprocessedEvents } from "../src/lib/webhooks/processor";
 
 /**
  * Starts campaigns whose scheduled time has arrived.
@@ -18,6 +22,29 @@ import { resumeDueSessions } from "../src/lib/journeys/engine";
  */
 
 async function main() {
+  /* --- Anything left half-done by a restart ---------------------------- */
+
+  // Runs first, and every few minutes rather than only on deploy. A message
+  // stored but never applied, or a campaign interrupted mid-send, would
+  // otherwise wait for someone to notice and redeploy — which during a
+  // months-long unattended run means it waits forever.
+  const recovered = await recoverUnprocessedEvents();
+
+  if (recovered.processed > 0 || recovered.failed > 0) {
+    console.log(
+      `Recovered:  ${recovered.processed} message(s) applied` +
+        (recovered.failed > 0 ? `, ${recovered.failed} failed` : ""),
+    );
+  }
+
+  const resumedCampaigns = await resumeStalledCampaigns();
+
+  if (resumedCampaigns.length > 0) {
+    console.log(
+      `Resumed:    ${resumedCampaigns.length} campaign(s) interrupted part-way`,
+    );
+  }
+
   /* --- Campaigns whose send time has arrived --------------------------- */
 
   const started = await runDueCampaigns();
