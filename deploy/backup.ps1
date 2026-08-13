@@ -1,21 +1,25 @@
-# Backs up the database to a timestamped, compressed file.
+# Backs up the database to Google Drive.
 #
 # Running the app yourself means the data is yours - which also means nobody
-# else is backing it up. Schedule this daily in Task Scheduler and keep a copy
-# somewhere off this machine.
+# else is backing it up. This is scheduled daily by deploy\repair.ps1.
 #
-# Usage:  powershell -File deploy\backup.ps1 [-BackupDir D:\backups] [-KeepDays 14]
+# The finished backup goes OFF this machine and is not kept on it. A copy on
+# the same disk as the database protects against nothing that actually happens
+# to laptops: a failed drive, a theft, ransomware. It only consumes space.
+#
+# The one exception is when the offsite copy fails - Drive signed out, folder
+# renamed, machine offline. Then the backup is kept locally rather than thrown
+# away, and the script says so, because a local backup beats none.
+#
+# Usage:  powershell -File deploy\backup.ps1 [-OffsiteDir "G:\My Drive\..."]
 
 param(
-    [string]$BackupDir = (Join-Path (Resolve-Path (Join-Path $PSScriptRoot "..")).Path "backups"),
-    # A second copy somewhere that survives this machine. A backup on the same
-    # disk as the database protects against almost nothing — not a failed
-    # drive, not a stolen laptop, not ransomware.
-    #
-    # Left empty so it can be worked out at run time: Google Drive is preferred
-    # when present, OneDrive otherwise. Pass -OffsiteDir to override.
+    # Where backups actually live. Worked out at run time when empty, so
+    # reinstalling Drive on a different letter does not silently stop this.
     [string]$OffsiteDir = "",
-    [int]$KeepDays = 14,
+    # Only used when the offsite copy fails.
+    [string]$FallbackDir = (Join-Path (Resolve-Path (Join-Path $PSScriptRoot "..")).Path "backups"),
+    [int]$KeepDays = 60,
     [string]$PgBin = "C:\Program Files\PostgreSQL\16\bin",
     [string]$Database = "uncanned_whatsapp",
     [string]$User = "uncanned"
@@ -23,16 +27,11 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-# --- Where the offsite copy goes -----------------------------------------
+# --- Where it goes --------------------------------------------------------
 
-# Worked out each run rather than fixed at install time, so installing Google
-# Drive later starts using it without anyone remembering to change a setting.
-# A synced FOLDER, deliberately, not an API: a folder cannot have its
-# credentials expire eight weeks into an unattended run and fail in silence.
 if (-not $OffsiteDir) {
-    # The folder Uncanned actually uses comes first. The rest are fallbacks so
-    # this still works on a machine where Drive is not installed, or if the
-    # drive letter differs after a reinstall.
+    # The folder Uncanned actually uses comes first; the rest are fallbacks for
+    # a different drive letter or a machine without Drive installed.
     $preferred = @(
         "G:\My Drive\Whatsapp Chats",
         "H:\My Drive\Whatsapp Chats",
@@ -44,8 +43,6 @@ if (-not $OffsiteDir) {
     }
 
     if (-not $OffsiteDir) {
-        $folderName = "Uncanned WhatsApp Backups"
-
         foreach ($root in @(
             "G:\My Drive",
             "H:\My Drive",
@@ -54,7 +51,7 @@ if (-not $OffsiteDir) {
             (Join-Path $env:USERPROFILE "OneDrive")
         )) {
             if (Test-Path $root) {
-                $OffsiteDir = Join-Path $root $folderName
+                $OffsiteDir = Join-Path $root "Uncanned WhatsApp Backups"
                 break
             }
         }
@@ -68,8 +65,10 @@ if (-not (Test-Path $pgDump)) {
 }
 
 # Read the password from .env rather than duplicating it in a second place.
-$envPath = Join-Path (Resolve-Path (Join-Path $PSScriptRoot "..")).Path ".env"
+$appRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
+$envPath = Join-Path $appRoot ".env"
 $dbUrl = (Get-Content $envPath | Select-String '^DATABASE_URL=').Line
+
 if ($dbUrl -match 'postgresql://([^:]+):([^@]+)@') {
     $env:PGPASSWORD = $Matches[2]
     $User = $Matches[1]
@@ -78,81 +77,109 @@ if ($dbUrl -match 'postgresql://([^:]+):([^@]+)@') {
     exit 1
 }
 
-if (-not (Test-Path $BackupDir)) {
-    New-Item -ItemType Directory -Path $BackupDir -Force | Out-Null
-}
+# --- Dump, into scratch space --------------------------------------------
+
+# Written to TEMP rather than the project folder, so the uncompressed dump
+# never sits on the app disk any longer than it takes to zip it.
+$work = Join-Path $env:TEMP "uncanned-backup"
+if (Test-Path $work) { Remove-Item $work -Recurse -Force }
+New-Item -ItemType Directory -Path $work -Force | Out-Null
 
 $stamp = Get-Date -Format "yyyy-MM-dd_HHmmss"
-$outFile = Join-Path $BackupDir "uncanned_$stamp.sql"
+$sqlFile = Join-Path $work "uncanned_$stamp.sql"
+$zipFile = "$sqlFile.zip"
 
-Write-Host "Backing up $Database..."
-& $pgDump -h localhost -U $User -d $Database -f $outFile --no-owner --no-privileges
+try {
+    Write-Host "Backing up $Database..."
+    & $pgDump -h localhost -U $User -d $Database -f $sqlFile --no-owner --no-privileges
 
-if ($LASTEXITCODE -ne 0) {
-    Remove-Item Env:PGPASSWORD
-    Write-Error "Backup failed"
-    exit 1
-}
+    if ($LASTEXITCODE -ne 0) {
+        Write-Error "Backup failed - the database could not be read."
+        exit 1
+    }
 
-Remove-Item Env:PGPASSWORD
+    Compress-Archive -Path $sqlFile -DestinationPath $zipFile -Force
+    Remove-Item $sqlFile
 
-Compress-Archive -Path $outFile -DestinationPath "$outFile.zip" -Force
-Remove-Item $outFile
+    $sizeMb = [math]::Round((Get-Item $zipFile).Length / 1MB, 2)
 
-$sizeMb = [math]::Round((Get-Item "$outFile.zip").Length / 1MB, 2)
-Write-Host "Saved $outFile.zip ($sizeMb MB)" -ForegroundColor Green
+    # --- Off this machine -------------------------------------------------
 
-# --- The copy that survives this machine ---------------------------------
+    $landed = $null
 
-if ($OffsiteDir) {
-    try {
-        if (-not (Test-Path $OffsiteDir)) {
-            New-Item -ItemType Directory -Path $OffsiteDir -Force | Out-Null
+    if ($OffsiteDir) {
+        try {
+            if (-not (Test-Path $OffsiteDir)) {
+                New-Item -ItemType Directory -Path $OffsiteDir -Force | Out-Null
+            }
+
+            Copy-Item $zipFile -Destination $OffsiteDir -Force
+
+            # Confirm it actually arrived. Copy-Item can succeed against a
+            # sync folder that is not really writable.
+            $check = Join-Path $OffsiteDir (Split-Path $zipFile -Leaf)
+            if (Test-Path $check) {
+                $landed = $OffsiteDir
+                Write-Host "Saved to $OffsiteDir ($sizeMb MB)" -ForegroundColor Green
+            }
+        } catch {
+            Write-Host "Could not write to $OffsiteDir" -ForegroundColor Yellow
+            Write-Host "  $($_.Exception.Message)" -ForegroundColor Yellow
+        }
+    }
+
+    # --- Keep it locally only if it could not go anywhere else ------------
+
+    if (-not $landed) {
+        if (-not (Test-Path $FallbackDir)) {
+            New-Item -ItemType Directory -Path $FallbackDir -Force | Out-Null
         }
 
-        Copy-Item "$outFile.zip" -Destination $OffsiteDir -Force
-        Write-Host "Copied to $OffsiteDir" -ForegroundColor Green
+        Copy-Item $zipFile -Destination $FallbackDir -Force
 
-        # Pruned separately: the offsite copy is the one that matters, so it
-        # is kept longer than the local one.
-        $offsiteCutoff = (Get-Date).AddDays(-($KeepDays * 3))
-        Get-ChildItem $OffsiteDir -Filter "uncanned_*.sql.zip" -ErrorAction SilentlyContinue |
-            Where-Object { $_.LastWriteTime -lt $offsiteCutoff } |
-            ForEach-Object { Remove-Item $_.FullName -ErrorAction SilentlyContinue }
+        Write-Host ""
+        Write-Host "WARNING: this backup could NOT be sent off this machine." -ForegroundColor Red
+        Write-Host "It was kept at $FallbackDir instead." -ForegroundColor Red
+        Write-Host "Check that Google Drive is signed in and syncing." -ForegroundColor Red
+        Write-Host ""
+    }
+
+    # --- Tell the app, so /api/health can report a stalled backup ---------
+
+    try {
+        $npm = "C:\Program Files\nodejs\npm.cmd"
+        if (Test-Path $npm) {
+            Push-Location $appRoot
+            & $npm run --silent record-backup 2>$null | Out-Null
+            Pop-Location
+        }
     } catch {
-        # Never fatal. A local backup with no offsite copy is still far better
-        # than no backup because OneDrive happened to be signed out.
-        Write-Host "Could not copy offsite: $($_.Exception.Message)" -ForegroundColor Yellow
-        Write-Host "The local backup was still saved." -ForegroundColor Yellow
+        Write-Host "Could not record the backup time (harmless)." -ForegroundColor DarkGray
+    }
+
+    # --- Prune ------------------------------------------------------------
+
+    $cutoff = (Get-Date).AddDays(-$KeepDays)
+
+    foreach ($dir in @($OffsiteDir, $FallbackDir)) {
+        if (-not $dir -or -not (Test-Path $dir)) { continue }
+
+        $old = Get-ChildItem $dir -Filter "uncanned_*.sql.zip" -ErrorAction SilentlyContinue |
+            Where-Object { $_.LastWriteTime -lt $cutoff }
+
+        foreach ($o in $old) {
+            Remove-Item $o.FullName -ErrorAction SilentlyContinue
+            Write-Host "  Removed backup older than $KeepDays days: $($o.Name)"
+        }
     }
 }
-
-# Tell the app a backup happened, so /api/health can report one that has
-# stopped running. Never fatal: a backup that succeeded is a backup whether or
-# not the timestamp got written.
-try {
-    $npm = "C:\Program Files\nodejs\npm.cmd"
-    if (Test-Path $npm) {
-        Push-Location (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
-        & $npm run --silent record-backup 2>$null | Out-Null
-        Pop-Location
-    }
-} catch {
-    Write-Host "Could not record the backup time (harmless)." -ForegroundColor DarkGray
-}
-
-# Prune old backups so the disk does not fill silently over months.
-$cutoff = (Get-Date).AddDays(-$KeepDays)
-$removed = Get-ChildItem $BackupDir -Filter "uncanned_*.sql.zip" |
-    Where-Object { $_.LastWriteTime -lt $cutoff }
-
-foreach ($old in $removed) {
-    Remove-Item $old.FullName
-    Write-Host "  Removed old backup: $($old.Name)"
+finally {
+    Remove-Item Env:PGPASSWORD -ErrorAction SilentlyContinue
+    # The scratch copy never outlives the run, whatever happened above.
+    if (Test-Path $work) { Remove-Item $work -Recurse -Force -ErrorAction SilentlyContinue }
 }
 
 Write-Host ""
-Write-Host "A backup that has never been restored is not a backup." -ForegroundColor Yellow
-Write-Host "Test one occasionally:"
-Write-Host "  createdb -U postgres restore_test"
-Write-Host "  psql -U postgres -d restore_test -f <unzipped .sql file>"
+Write-Host "A backup that has never been restored is not a backup." -ForegroundColor DarkGray
+Write-Host "Check one occasionally:  powershell -File deploy\verify-backup.ps1" -ForegroundColor DarkGray
+Write-Host ""

@@ -7,7 +7,10 @@
 # Usage:  powershell -File deploy\verify-backup.ps1
 
 param(
-    [string]$BackupDir = (Join-Path (Resolve-Path (Join-Path $PSScriptRoot "..")).Path "backups"),
+    # Left empty so it looks wherever backups actually are. They live off this
+    # machine now, so hard-coding the old local folder would have this cheerily
+    # report "no backups found" while a year of them sat in Drive.
+    [string]$BackupDir = "",
     [string]$PgBin = "C:\Program Files\PostgreSQL\16\bin",
     [string]$ScratchDb = "uncanned_restore_test"
 )
@@ -33,14 +36,32 @@ Write-Host ""
 
 # --- Find it -------------------------------------------------------------
 
-$newest = Get-ChildItem $BackupDir -Filter "uncanned_*.sql.zip" -ErrorAction SilentlyContinue |
+# Every place a backup could be, newest wins. The same list backup.ps1 writes
+# to, plus the local fallback it uses when Drive is unreachable.
+$searchDirs = @(
+    "G:\My Drive\Whatsapp Chats",
+    "H:\My Drive\Whatsapp Chats",
+    (Join-Path $env:USERPROFILE "My Drive\Whatsapp Chats"),
+    (Join-Path $env:USERPROFILE "OneDrive\Uncanned WhatsApp Backups"),
+    (Join-Path (Resolve-Path (Join-Path $PSScriptRoot "..")).Path "backups")
+)
+
+if ($BackupDir) { $searchDirs = @($BackupDir) }
+
+$newest = $searchDirs |
+    Where-Object { Test-Path $_ } |
+    ForEach-Object { Get-ChildItem $_ -Filter "uncanned_*.sql.zip" -ErrorAction SilentlyContinue } |
     Sort-Object LastWriteTime -Descending | Select-Object -First 1
 
 if (-not $newest) {
-    Write-Host "No backups found in $BackupDir" -ForegroundColor Red
+    Write-Host "No backups found in any of:" -ForegroundColor Red
+    $searchDirs | ForEach-Object { Write-Host "  $_" }
+    Write-Host ""
     Write-Host "Run deploy\backup.ps1 first."
     exit 1
 }
+
+Write-Host "Found in: $($newest.DirectoryName)"
 
 $ageHours = [math]::Round(((Get-Date) - $newest.LastWriteTime).TotalHours, 1)
 Write-Host "Newest backup: $($newest.Name)"
