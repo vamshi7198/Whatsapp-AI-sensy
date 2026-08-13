@@ -38,6 +38,16 @@ export const SETTING_KEYS = {
   SEND_RATE_MPS: "campaign.send_rate_mps",
   LARGE_THRESHOLD: "campaign.large_threshold",
   DEFAULT_TIMEZONE: "campaign.default_timezone",
+  /**
+   * When the scheduler last completed a pass.
+   *
+   * The one signal worth watching. Every page keeps loading perfectly when the
+   * scheduler dies, so nothing else reveals that scheduled campaigns and
+   * journey waits have quietly stopped happening.
+   */
+  SCHEDULER_LAST_RUN: "ops.scheduler_last_run",
+  /** When a database backup last succeeded. */
+  LAST_BACKUP_AT: "ops.last_backup_at",
 } as const;
 
 /** Meta supports each Graph API version for roughly two years. */

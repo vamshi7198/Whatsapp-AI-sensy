@@ -6,6 +6,7 @@ import {
 } from "../src/lib/campaigns/sender";
 import { prisma } from "../src/lib/db";
 import { resumeDueSessions } from "../src/lib/journeys/engine";
+import { SETTING_KEYS, setSetting } from "../src/lib/settings";
 import { recoverUnprocessedEvents } from "../src/lib/webhooks/processor";
 
 /**
@@ -79,6 +80,13 @@ async function main() {
       ? "Journeys:  nobody waiting."
       : `Journeys:  resumed ${resumed} conversation${resumed === 1 ? "" : "s"}.`,
   );
+
+  /* --- Say that this ran ----------------------------------------------- */
+
+  // Written last, so it means "a whole pass completed" rather than "a pass
+  // started". /api/health reads it, and it is the only thing that reveals a
+  // dead scheduler — every page keeps working perfectly without one.
+  await setSetting(SETTING_KEYS.SCHEDULER_LAST_RUN, new Date().toISOString());
 
   await prisma.$disconnect();
 }

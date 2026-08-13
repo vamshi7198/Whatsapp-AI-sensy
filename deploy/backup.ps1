@@ -8,6 +8,13 @@
 
 param(
     [string]$BackupDir = (Join-Path (Resolve-Path (Join-Path $PSScriptRoot "..")).Path "backups"),
+    # A second copy somewhere that survives this machine. A backup on the same
+    # disk as the database protects against almost nothing — not a failed
+    # drive, not a stolen laptop, not ransomware.
+    #
+    # Left empty so it can be worked out at run time: Google Drive is preferred
+    # when present, OneDrive otherwise. Pass -OffsiteDir to override.
+    [string]$OffsiteDir = "",
     [int]$KeepDays = 14,
     [string]$PgBin = "C:\Program Files\PostgreSQL\16\bin",
     [string]$Database = "uncanned_whatsapp",
@@ -15,6 +22,44 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+
+# --- Where the offsite copy goes -----------------------------------------
+
+# Worked out each run rather than fixed at install time, so installing Google
+# Drive later starts using it without anyone remembering to change a setting.
+# A synced FOLDER, deliberately, not an API: a folder cannot have its
+# credentials expire eight weeks into an unattended run and fail in silence.
+if (-not $OffsiteDir) {
+    # The folder Uncanned actually uses comes first. The rest are fallbacks so
+    # this still works on a machine where Drive is not installed, or if the
+    # drive letter differs after a reinstall.
+    $preferred = @(
+        "G:\My Drive\Whatsapp Chats",
+        "H:\My Drive\Whatsapp Chats",
+        (Join-Path $env:USERPROFILE "My Drive\Whatsapp Chats")
+    )
+
+    foreach ($p in $preferred) {
+        if (Test-Path $p) { $OffsiteDir = $p; break }
+    }
+
+    if (-not $OffsiteDir) {
+        $folderName = "Uncanned WhatsApp Backups"
+
+        foreach ($root in @(
+            "G:\My Drive",
+            "H:\My Drive",
+            (Join-Path $env:USERPROFILE "My Drive"),
+            (Join-Path $env:USERPROFILE "Google Drive"),
+            (Join-Path $env:USERPROFILE "OneDrive")
+        )) {
+            if (Test-Path $root) {
+                $OffsiteDir = Join-Path $root $folderName
+                break
+            }
+        }
+    }
+}
 
 $pgDump = Join-Path $PgBin "pg_dump.exe"
 if (-not (Test-Path $pgDump)) {
@@ -56,6 +101,45 @@ Remove-Item $outFile
 
 $sizeMb = [math]::Round((Get-Item "$outFile.zip").Length / 1MB, 2)
 Write-Host "Saved $outFile.zip ($sizeMb MB)" -ForegroundColor Green
+
+# --- The copy that survives this machine ---------------------------------
+
+if ($OffsiteDir) {
+    try {
+        if (-not (Test-Path $OffsiteDir)) {
+            New-Item -ItemType Directory -Path $OffsiteDir -Force | Out-Null
+        }
+
+        Copy-Item "$outFile.zip" -Destination $OffsiteDir -Force
+        Write-Host "Copied to $OffsiteDir" -ForegroundColor Green
+
+        # Pruned separately: the offsite copy is the one that matters, so it
+        # is kept longer than the local one.
+        $offsiteCutoff = (Get-Date).AddDays(-($KeepDays * 3))
+        Get-ChildItem $OffsiteDir -Filter "uncanned_*.sql.zip" -ErrorAction SilentlyContinue |
+            Where-Object { $_.LastWriteTime -lt $offsiteCutoff } |
+            ForEach-Object { Remove-Item $_.FullName -ErrorAction SilentlyContinue }
+    } catch {
+        # Never fatal. A local backup with no offsite copy is still far better
+        # than no backup because OneDrive happened to be signed out.
+        Write-Host "Could not copy offsite: $($_.Exception.Message)" -ForegroundColor Yellow
+        Write-Host "The local backup was still saved." -ForegroundColor Yellow
+    }
+}
+
+# Tell the app a backup happened, so /api/health can report one that has
+# stopped running. Never fatal: a backup that succeeded is a backup whether or
+# not the timestamp got written.
+try {
+    $npm = "C:\Program Files\nodejs\npm.cmd"
+    if (Test-Path $npm) {
+        Push-Location (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
+        & $npm run --silent record-backup 2>$null | Out-Null
+        Pop-Location
+    }
+} catch {
+    Write-Host "Could not record the backup time (harmless)." -ForegroundColor DarkGray
+}
 
 # Prune old backups so the disk does not fill silently over months.
 $cutoff = (Get-Date).AddDays(-$KeepDays)
