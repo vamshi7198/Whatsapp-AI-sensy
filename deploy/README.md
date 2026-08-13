@@ -49,8 +49,8 @@ Restart PowerShell afterwards so `PATH` updates.
 ## Step 2 — Set up the application
 
 ```powershell
-git clone <your-repo-url> C:\uncanned
-cd C:\uncanned
+git clone <your-repo-url> C:\dev\uncanned-whatsapp
+cd C:\dev\uncanned-whatsapp
 npm ci
 ```
 
@@ -150,32 +150,49 @@ cloudflared service install
 
 ---
 
-## Step 5 — Run the app as a Windows service
+## Step 5 — Make it survive reboots
 
-So it survives reboots and nobody has to keep a terminal open.
+So nobody has to keep a terminal open, and the machine comes back on its own
+after a Windows update restarts it overnight.
+
+As Administrator:
 
 ```powershell
-winget install nssm.nssm
+cd C:\dev\uncanned-whatsapp
+powershell -ExecutionPolicy Bypass -File deploy\repair.ps1
 ```
 
-Then, as Administrator:
+One command, and it is safe to run at any time — it checks everything and
+fixes only what is broken.
+
+It registers three scheduled tasks:
+
+| Task | What it does | When |
+|---|---|---|
+| `UncannedWhatsApp` | The web application on port 3000 | At startup, after a one minute delay |
+| `UncannedWhatsAppScheduler` | Sends scheduled campaigns, resumes waiting conversations, picks up anything a restart interrupted | Every 5 minutes |
+| `UncannedWhatsAppBackup` | Database backup to Google Drive | Daily at 2:30am |
+
+The one minute delay is deliberate: "at startup" fires before networking and
+PostgreSQL are ready, and an app that starts into a machine with no database
+exits before Windows would retry it.
+
+To check them, as Administrator:
 
 ```powershell
-powershell -File deploy\install-services.ps1
+schtasks /query /fo TABLE | findstr /i uncanned
 ```
 
-This registers two services:
+⚠️ **A normal terminal cannot see these tasks.** They run as SYSTEM, and an
+unelevated `Get-ScheduledTask` reports them as missing rather than refusing —
+which reads as "the task was never created" and has caused a wasted afternoon
+more than once. Always check from an Administrator terminal.
 
-| Service | What it does |
-|---|---|
-| `UncannedWhatsAppWeb` | The web application on port 3000 |
-| `UncannedWhatsAppWorker` | Background sending (needed from campaigns onward) |
-
-Manage them from Services (`services.msc`) or:
+To restart the app by hand:
 
 ```powershell
-Restart-Service UncannedWhatsAppWeb
-Get-Service Uncanned*
+Stop-ScheduledTask -TaskName UncannedWhatsApp
+Start-ScheduledTask -TaskName UncannedWhatsApp
 ```
 
 ---
@@ -210,7 +227,8 @@ META_APP_SECRET="..."
 ```
 
 ```powershell
-Restart-Service UncannedWhatsAppWeb
+Stop-ScheduledTask -TaskName UncannedWhatsApp
+Start-ScheduledTask -TaskName UncannedWhatsApp
 ```
 
 Without the App Secret the app cannot verify that incoming webhooks genuinely
@@ -230,25 +248,57 @@ came from Meta, and it will reject them all rather than trust them.
 
 ## Keeping it healthy
 
-**Back up the database.** The whole point of running it yourself is that the
-data is yours — which also means nobody else is backing it up.
+**Backups run themselves**, daily at 2:30am, once `repair.ps1` has been run.
+They go to Google Drive rather than this machine — a copy on the same disk as
+the database survives none of the things that actually happen to a laptop.
+
+```
+G:\My Drive\Whatsapp Chats\
+```
+
+Nothing is ever deleted automatically. Each backup is about 0.03 MB, so a
+decade of them is a few hundred megabytes.
+
+To take one immediately:
 
 ```powershell
 powershell -File deploy\backup.ps1
 ```
 
-Schedule it daily via Task Scheduler. Keep a copy off the machine.
+**Check a backup can actually be restored.** Worth doing every few months:
+
+```powershell
+powershell -File deploy\verify-backup.ps1
+```
+
+It restores the newest backup into a scratch database, counts the tables,
+compares them against live, and throws the scratch database away. It never
+touches the real one. A backup nobody has restored is a guess.
+
+**Is it alive?** One address answers, with no login:
+
+```
+https://whatsapp.uncanned.in/api/health
+```
+
+The line that matters is `scheduler`. Every page keeps loading perfectly when
+the scheduler dies, while scheduled campaigns and waiting conversations
+quietly stop happening — this is the only thing that reveals it. Point a free
+uptime monitor at this URL if you want to be told rather than to check.
 
 **Updating:**
 
+Double-click **Update Uncanned WhatsApp** on the Desktop, or:
+
 ```powershell
-cd C:\uncanned
-git pull
-npm ci
-npm run db:deploy
-npm run build
-Restart-Service UncannedWhatsAppWeb, UncannedWhatsAppWorker
+cd C:\dev\uncanned-whatsapp
+powershell -ExecutionPolicy Bypass -File deploy\update.ps1
 ```
+
+Never run `npm run build` while the app is running. It replaces the files
+underneath the live process, and pages start returning errors with nothing in
+the logs to explain it. `update.ps1` stops, builds, and restarts in the right
+order for exactly this reason.
 
 **If messages stop arriving,** check in this order:
 
