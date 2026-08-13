@@ -469,7 +469,13 @@ export async function resumeStalledCampaigns(
 
   const candidates = await prisma.campaign.findMany({
     where: {
-      status: { in: ["QUEUED", "RUNNING"] },
+      // PARTIALLY_FAILED is included deliberately. An expired token pauses a
+      // campaign into that state with recipients still PENDING, and without
+      // this they were stranded forever — the campaign looked finished while
+      // people who were never messaged sat waiting behind it. A genuinely
+      // finished campaign has no PENDING recipients, so the clause below
+      // excludes it anyway.
+      status: { in: ["QUEUED", "RUNNING", "PARTIALLY_FAILED"] },
       updatedAt: { lt: cutoff },
       recipients: { some: { status: "PENDING", attemptCount: { lt: MAX_ATTEMPTS } } },
     },

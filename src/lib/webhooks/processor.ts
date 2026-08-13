@@ -146,7 +146,13 @@ export async function applyStoredEvents(
       await prisma.webhookEvent
         .update({
           where: { dedupeKey },
-          data: { status: "FAILED", error: message },
+          // Counted so recovery can retry a few times and then stop, rather
+          // than either giving up at once or retrying a broken event forever.
+          data: {
+            status: "FAILED",
+            error: message,
+            attemptCount: { increment: 1 },
+          },
         })
         .catch(() => undefined);
 
@@ -182,9 +188,29 @@ export async function processWebhookEvents(
  * Safe to run repeatedly — applying an event twice converges on the same
  * state.
  */
+/** How many times a failed event is retried before it is left alone. */
+const MAX_RECOVERY_ATTEMPTS = 5;
+
 export async function recoverUnprocessedEvents(): Promise<ProcessResult> {
   const pending = await prisma.webhookEvent.findMany({
-    where: { status: { in: ["RECEIVED", "PROCESSING"] }, signatureValid: true },
+    where: {
+      signatureValid: true,
+      OR: [
+        // Stored but never applied — the machine died in between.
+        { status: { in: ["RECEIVED", "PROCESSING"] } },
+        // Applied and threw. Retried a few times rather than abandoned:
+        // the usual causes are transient — the database was briefly
+        // unreachable, a contact was mid-write — and a customer's message
+        // sitting FAILED forever is exactly the silent loss this whole
+        // pipeline exists to prevent. Bounded, so a genuinely malformed
+        // event stops rather than being retried every five minutes for
+        // months.
+        {
+          status: "FAILED",
+          attemptCount: { lt: MAX_RECOVERY_ATTEMPTS },
+        },
+      ],
+    },
     orderBy: { receivedAt: "asc" },
     take: 500,
   });

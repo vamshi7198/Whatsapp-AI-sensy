@@ -124,7 +124,11 @@ export default async function CampaignReportPage({
     tone: "neutral" as const,
   };
 
-  const inFlight = ["QUEUED", "RUNNING"].includes(campaign.status);
+  // SCHEDULED belongs here. Without it the Stop button never appeared for a
+  // campaign waiting to send — the one case where stopping is both easiest
+  // and most useful, since nothing has gone out yet. The action behind it
+  // always allowed it; only the button was missing.
+  const inFlight = ["QUEUED", "RUNNING", "SCHEDULED"].includes(campaign.status);
 
   return (
     <div className="space-y-5">
