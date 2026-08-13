@@ -186,17 +186,27 @@ export function StepSettings({
             />
           </Field>
 
-          <Field label="Also save to the contact" htmlFor="saveToContactField">
-            <Select
+          <Field
+            label="Also save it on the contact"
+            htmlFor="saveToContactField"
+            hint="Leave blank to keep it only for this conversation."
+          >
+            <Input
               id="saveToContactField"
               value={String(step.config.saveToContactField ?? "")}
               onChange={(e) => setConfig({ saveToContactField: e.target.value })}
-            >
-              <option value="">Don&rsquo;t save to the contact</option>
-              <option value="name">Their name</option>
-              <option value="email">Their email</option>
-              <option value="address">Their address</option>
-            </Select>
+              placeholder="address"
+              list="contact-field-suggestions"
+            />
+            {/* Suggestions rather than a fixed list: any name works, and the
+                two that are real columns are simply the common ones. */}
+            <datalist id="contact-field-suggestions">
+              <option value="name" />
+              <option value="email" />
+              <option value="address" />
+              <option value="pincode" />
+              <option value="flavour" />
+            </datalist>
           </Field>
         </>
       )}
@@ -365,16 +375,25 @@ export function StepSettings({
 
       {step.type === "UPDATE_CONTACT" && (
         <>
-          <Field label="Which detail" htmlFor="field">
-            <Select
+          <Field
+            label="Which detail"
+            htmlFor="field"
+            hint="Anything you like — it is saved on the contact under this name."
+          >
+            <Input
               id="field"
-              value={String(step.config.field ?? "name")}
+              value={String(step.config.field ?? "")}
               onChange={(e) => setConfig({ field: e.target.value })}
-            >
-              <option value="name">Name</option>
-              <option value="email">Email</option>
-              <option value="address">Address</option>
-            </Select>
+              placeholder="address"
+              list="contact-field-suggestions-update"
+            />
+            <datalist id="contact-field-suggestions-update">
+              <option value="name" />
+              <option value="email" />
+              <option value="address" />
+              <option value="pincode" />
+              <option value="flavour" />
+            </datalist>
           </Field>
 
           <Field

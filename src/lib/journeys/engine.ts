@@ -5,6 +5,7 @@ import { getServiceWindow } from "../inbox/service";
 import { maskPhone, moduleLogger } from "../logger";
 import { getProvider } from "../whatsapp";
 import { INTERACTIVE_LIMITS } from "../whatsapp/types";
+import { readContactField, writeContactField } from "./contact-fields";
 import {
   optionsForStep,
   readAskQuestion,
@@ -346,9 +347,25 @@ export async function advanceSession(input: {
     });
 
     if (config.saveToContactField) {
-      await prisma.contact.update({
-        where: { id: session.contactId },
-        data: { [config.saveToContactField]: answer },
+      // Through the helper, which knows which names are real columns and puts
+      // everything else in the attributes bag. Writing straight to a column
+      // threw for any field that was not one of two, killing the step and
+      // leaving the customer stuck.
+      await writeContactField(
+        session.contactId,
+        config.saveToContactField,
+        answer,
+      ).catch((error) => {
+        // Not worth ending a conversation over. The answer is already in the
+        // session context and usable by later steps either way.
+        log.warn(
+          {
+            sessionId: session.id,
+            field: config.saveToContactField,
+            err: error instanceof Error ? error.message : error,
+          },
+          "Could not save the answer to the contact — carrying on",
+        );
       });
     }
 
@@ -578,10 +595,7 @@ async function executeStep(
       const value = render(config.value, context);
 
       if (value) {
-        await prisma.contact.update({
-          where: { id: session.contactId },
-          data: { [config.field]: value },
-        });
+        await writeContactField(session.contactId, config.field, value);
       }
 
       await recordRun(session.id, step.id, "COMPLETED");
@@ -835,13 +849,11 @@ async function evaluateCondition(
     const value = context[config.key];
     actual = value === undefined || value === null ? null : String(value);
   } else {
-    const contact = await prisma.contact.findUnique({
-      where: { id: session.contactId },
-      select: { name: true, email: true },
-    });
-
-    const value = (contact as Record<string, unknown> | null)?.[config.key];
-    actual = typeof value === "string" ? value : null;
+    // Reads columns and attributes alike, so a condition on a field an
+    // earlier step saved works. Selecting only name and email made every
+    // other field read as absent, which quietly sent everyone down the
+    // "no" branch rather than failing visibly.
+    actual = await readContactField(session.contactId, config.key);
   }
 
   switch (config.operator) {

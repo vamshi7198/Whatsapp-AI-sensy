@@ -49,8 +49,14 @@ export interface AskQuestionConfig {
   body: string;
   /** Where the answer is stored, e.g. "flavour". Available later as a variable. */
   saveAs: string;
-  /** Also write it to a contact field, when it is a real contact detail. */
-  saveToContactField?: "name" | "email" | "address";
+  /**
+   * Also save it onto the contact, under this name.
+   *
+   * Any name. Known columns go to columns and everything else to the
+   * attributes bag — restricting it to a fixed list meant the engine wrote to
+   * a column that did not exist and stranded the customer at that step.
+   */
+  saveToContactField?: string;
 }
 
 export interface SendMediaConfig {
@@ -65,8 +71,13 @@ export interface TagConfig {
 }
 
 export interface UpdateContactConfig {
-  /** Field to set, and the value, which may contain variables. */
-  field: "name" | "email" | "address";
+  /**
+   * Which detail to set, and the value, which may contain variables.
+   *
+   * Any name, for the same reason as AskQuestionConfig: a fixed list meant
+   * choosing "address" wrote to a column that does not exist.
+   */
+  field: string;
   value: string;
 }
 

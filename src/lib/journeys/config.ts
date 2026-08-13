@@ -105,15 +105,16 @@ export function readAskQuestion(
   value: Prisma.JsonValue | null,
 ): AskQuestionConfig {
   const raw = asRecord(value);
-  const field = asString(raw.saveToContactField);
+  const field = asString(raw.saveToContactField).trim();
 
   return {
     body: asString(raw.body),
     // A blank key would silently discard the answer, so it gets a name.
     saveAs: asString(raw.saveAs) || "answer",
-    ...(field === "name" || field === "email" || field === "address"
-      ? { saveToContactField: field }
-      : {}),
+    // Any field name is allowed. Restricting it to a fixed three meant the
+    // engine wrote straight to a column that did not exist and killed the
+    // step; writeContactField now decides where a name belongs.
+    ...(field ? { saveToContactField: field } : {}),
   };
 }
 
@@ -137,10 +138,12 @@ export function readUpdateContact(
   value: Prisma.JsonValue | null,
 ): UpdateContactConfig {
   const raw = asRecord(value);
-  const field = asString(raw.field);
 
   return {
-    field: field === "email" || field === "address" ? field : "name",
+    // Any name. Known columns go to columns and the rest to attributes —
+    // writeContactField decides, so nothing here can name a column that does
+    // not exist and take the conversation down with it.
+    field: asString(raw.field).trim() || "name",
     value: asString(raw.value),
   };
 }
