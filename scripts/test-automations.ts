@@ -1,6 +1,9 @@
 import "dotenv/config";
 
-import { runAutomationsForInbound } from "../src/lib/automations/engine";
+import {
+  matchesKeyword,
+  runAutomationsForInbound,
+} from "../src/lib/automations/engine";
 import { prisma } from "../src/lib/db";
 
 /**
@@ -99,6 +102,55 @@ async function tagCount(contactId: string): Promise<number> {
 async function main() {
   console.log("Automation engine test\n");
   await cleanup();
+
+  // Only the FIRST matching automation replies, so a live one that matches the
+  // test's own phrases answers first and every check below fails for a reason
+  // unconnected to the code. That happened, and looked exactly like a real
+  // regression — so the test now says which rule got in the way rather than
+  // reporting a mystery.
+  //
+  // Checked by actually matching, not by counting: a live automation that
+  // cannot match these phrases is none of this test's business.
+  const PHRASES = [
+    "hi, can I track my order?",
+    "track please",
+    "track my order",
+    "do you deliver to Hyderabad?",
+    "something completely unrelated",
+  ];
+
+  const live = await prisma.automation.findMany({
+    where: { isActive: true, name: { not: { startsWith: "AUTOTEST " } } },
+    include: { triggers: true },
+  });
+
+  const clashing = live.filter((automation) =>
+    automation.triggers.some((trigger) => {
+      if (trigger.type === "INCOMING_MESSAGE") return true;
+      if (trigger.type !== "KEYWORD") return false;
+
+      const config = (trigger.config ?? {}) as {
+        keywords?: string[];
+        matchType?: string;
+      };
+
+      return PHRASES.some((phrase) =>
+        matchesKeyword(phrase, {
+          keywords: config.keywords ?? [],
+          matchType: config.matchType === "exact" ? "exact" : "contains",
+        }),
+      );
+    }),
+  );
+
+  if (clashing.length > 0) {
+    console.log("Cannot run. These live automations answer the same phrases");
+    console.log("this test uses, and only the first match replies:\n");
+    for (const a of clashing) console.log(`  ${a.name}`);
+    console.log("\nSwitch them off under Automations, run this, switch back.");
+    await prisma.$disconnect();
+    process.exit(1);
+  }
 
   const tag = await prisma.tag.create({
     data: { name: "test-automation-tag", slug: TAG_SLUG },
