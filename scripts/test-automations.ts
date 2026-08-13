@@ -111,8 +111,12 @@ async function main() {
   //
   // Checked by actually matching, not by counting: a live automation that
   // cannot match these phrases is none of this test's business.
+  //
+  // The phrases avoid greetings deliberately. A live rule on "Hi" answers most
+  // opening messages, so anything starting with one would be intercepted
+  // before it ever reached the automation under test.
   const PHRASES = [
-    "hi, can I track my order?",
+    "can I track my order?",
     "track please",
     "track my order",
     "do you deliver to Hyderabad?",
@@ -168,7 +172,7 @@ async function main() {
   await runAutomationsForInbound({
     contactId: p1.contact.id,
     phoneE164: p1.contact.phoneE164,
-    text: "hi, can I track my order?",
+    text: "can I track my order?",
     externalMessageId: "wamid.test.001",
     conversationId: p1.conversation.id,
     lastInboundAt: new Date(),
@@ -183,7 +187,7 @@ async function main() {
   await runAutomationsForInbound({
     contactId: p1.contact.id,
     phoneE164: p1.contact.phoneE164,
-    text: "hi, can I track my order?",
+    text: "can I track my order?",
     externalMessageId: "wamid.test.001",
     conversationId: p1.conversation.id,
     lastInboundAt: new Date(),
