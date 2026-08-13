@@ -41,6 +41,7 @@ yarn-error.log*
 # campaign images uploaded at runtime — belong on the server, not in git
 /public/media
 /backups
+# may contain customer phone numbers and message text
 /logs
 
 # vercel

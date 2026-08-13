@@ -5,6 +5,7 @@ import type { MessageStatus, Prisma } from "@prisma/client";
 import { runAutomationsForInbound } from "../automations/engine";
 import { recordMessageCost } from "../campaigns/pricing";
 import { recordFlowResponse } from "../flows/service";
+import { env } from "../env";
 import { advanceSession } from "../journeys/engine";
 import { startJourneyFromMessage } from "../journeys/triggers";
 import { prisma } from "../db";
@@ -191,6 +192,40 @@ export async function processWebhookEvents(
  */
 /** How many times a failed event is retried before it is left alone. */
 const MAX_RECOVERY_ATTEMPTS = 5;
+
+/**
+ * Deletes webhook events older than the configured retention.
+ *
+ * WEBHOOK_RETENTION_DAYS has been declared since the beginning and read by
+ * nothing, so the table only ever grew — and the Activity log groups over the
+ * whole of it on every page load. Left alone for five months it becomes the
+ * slowest page in the app for no reason anyone would guess.
+ *
+ * Only events that have been dealt with are removed. Anything still awaiting
+ * work stays regardless of age, because deleting it would be the silent
+ * message loss everything else here exists to prevent.
+ */
+export async function pruneWebhookEvents(): Promise<number> {
+  const cutoff = new Date(
+    Date.now() - env.WEBHOOK_RETENTION_DAYS * 24 * 60 * 60 * 1000,
+  );
+
+  const { count } = await prisma.webhookEvent.deleteMany({
+    where: {
+      receivedAt: { lt: cutoff },
+      status: { in: ["PROCESSED", "IGNORED"] },
+    },
+  });
+
+  if (count > 0) {
+    log.info(
+      { removed: count, olderThanDays: env.WEBHOOK_RETENTION_DAYS },
+      "Pruned old webhook events",
+    );
+  }
+
+  return count;
+}
 
 export async function recoverUnprocessedEvents(): Promise<ProcessResult> {
   const pending = await prisma.webhookEvent.findMany({

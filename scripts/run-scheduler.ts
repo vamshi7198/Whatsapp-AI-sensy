@@ -7,7 +7,10 @@ import {
 import { prisma } from "../src/lib/db";
 import { resumeDueSessions } from "../src/lib/journeys/engine";
 import { SETTING_KEYS, setSetting } from "../src/lib/settings";
-import { recoverUnprocessedEvents } from "../src/lib/webhooks/processor";
+import {
+  pruneWebhookEvents,
+  recoverUnprocessedEvents,
+} from "../src/lib/webhooks/processor";
 
 /**
  * Starts campaigns whose scheduled time has arrived.
@@ -80,6 +83,15 @@ async function main() {
       ? "Journeys:  nobody waiting."
       : `Journeys:  resumed ${resumed} conversation${resumed === 1 ? "" : "s"}.`,
   );
+
+  /* --- Housekeeping ----------------------------------------------------- */
+
+  // Once a day is plenty, and doing it on every five-minute pass would be a
+  // pointless delete against a growing table.
+  if (new Date().getHours() === 3) {
+    const pruned = await pruneWebhookEvents();
+    if (pruned > 0) console.log(`Tidied:     removed ${pruned} old event(s).`);
+  }
 
   /* --- Say that this ran ----------------------------------------------- */
 
