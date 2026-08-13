@@ -19,7 +19,11 @@ param(
     [string]$OffsiteDir = "",
     # Only used when the offsite copy fails.
     [string]$FallbackDir = (Join-Path (Resolve-Path (Join-Path $PSScriptRoot "..")).Path "backups"),
-    [int]$KeepDays = 60,
+    # 0 means never delete anything. Chosen deliberately: a backup is about
+    # 0.03 MB, so a decade of daily ones is a few hundred megabytes in Drive,
+    # and the only thing automatic deletion could ever achieve here is losing
+    # the copy somebody eventually needs. Pass a number of days to prune.
+    [int]$KeepDays = 0,
     [string]$PgBin = "C:\Program Files\PostgreSQL\16\bin",
     [string]$Database = "uncanned_whatsapp",
     [string]$User = "uncanned"
@@ -157,19 +161,23 @@ try {
         Write-Host "Could not record the backup time (harmless)." -ForegroundColor DarkGray
     }
 
-    # --- Prune ------------------------------------------------------------
+    # --- Prune, only if asked ---------------------------------------------
 
-    $cutoff = (Get-Date).AddDays(-$KeepDays)
+    # Off by default. Nothing is deleted unless a retention period is passed
+    # in, so the only way to lose an old backup is to ask for it.
+    if ($KeepDays -gt 0) {
+        $cutoff = (Get-Date).AddDays(-$KeepDays)
 
-    foreach ($dir in @($OffsiteDir, $FallbackDir)) {
-        if (-not $dir -or -not (Test-Path $dir)) { continue }
+        foreach ($dir in @($OffsiteDir, $FallbackDir)) {
+            if (-not $dir -or -not (Test-Path $dir)) { continue }
 
-        $old = Get-ChildItem $dir -Filter "uncanned_*.sql.zip" -ErrorAction SilentlyContinue |
-            Where-Object { $_.LastWriteTime -lt $cutoff }
+            $old = Get-ChildItem $dir -Filter "uncanned_*.sql.zip" -ErrorAction SilentlyContinue |
+                Where-Object { $_.LastWriteTime -lt $cutoff }
 
-        foreach ($o in $old) {
-            Remove-Item $o.FullName -ErrorAction SilentlyContinue
-            Write-Host "  Removed backup older than $KeepDays days: $($o.Name)"
+            foreach ($o in $old) {
+                Remove-Item $o.FullName -ErrorAction SilentlyContinue
+                Write-Host "  Removed backup older than $KeepDays days: $($o.Name)"
+            }
         }
     }
 }
