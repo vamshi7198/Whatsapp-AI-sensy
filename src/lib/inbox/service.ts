@@ -56,6 +56,17 @@ export interface ConversationListItem {
   status: "OPEN" | "PENDING" | "CLOSED";
   preview: string | null;
   previewDirection: "INBOUND" | "OUTBOUND" | null;
+  /**
+   * Where an automated conversation has got to, when there is one.
+   *
+   * Shown so an agent does not reply into the middle of a journey's sentence,
+   * and so a journey that asked for a person is visible to one.
+   */
+  journey: {
+    name: string;
+    step: string | null;
+    needsPerson: boolean;
+  } | null;
 }
 
 export async function listConversations(options: {
@@ -104,18 +115,52 @@ export async function listConversations(options: {
     },
   });
 
-  return conversations.map((c) => ({
-    id: c.id,
-    contactId: c.contactId,
-    name: c.contact.name,
-    phoneE164: c.contact.phoneE164,
-    lastMessageAt: c.lastMessageAt,
-    lastInboundAt: c.lastInboundAt,
-    unreadCount: c.unreadCount,
-    status: c.status,
-    preview: c.messages[0]?.body ?? (c.messages[0] ? `(${c.messages[0].type})` : null),
-    previewDirection: c.messages[0]?.direction ?? null,
-  }));
+  // Who is partway through a journey, and where.
+  //
+  // Without this an agent replies into a conversation with no idea a journey
+  // is mid-sentence, and a journey that handed someone over tells nobody it
+  // did. Fetched in one query rather than per conversation.
+  const sessions = await prisma.journeySession.findMany({
+    where: {
+      contactId: { in: conversations.map((c) => c.contactId) },
+      status: {
+        in: ["ACTIVE", "WAITING_FOR_REPLY", "WAITING_UNTIL", "HANDED_OFF"],
+      },
+    },
+    select: {
+      contactId: true,
+      status: true,
+      journey: { select: { name: true } },
+      currentStep: { select: { name: true } },
+    },
+  });
+
+  const byContact = new Map(sessions.map((s) => [s.contactId, s]));
+
+  return conversations.map((c) => {
+    const session = byContact.get(c.contactId);
+
+    return {
+      id: c.id,
+      contactId: c.contactId,
+      name: c.contact.name,
+      phoneE164: c.contact.phoneE164,
+      lastMessageAt: c.lastMessageAt,
+      lastInboundAt: c.lastInboundAt,
+      unreadCount: c.unreadCount,
+      status: c.status,
+      preview: c.messages[0]?.body ?? (c.messages[0] ? `(${c.messages[0].type})` : null),
+      previewDirection: c.messages[0]?.direction ?? null,
+      journey: session
+        ? {
+            name: session.journey.name,
+            step: session.currentStep?.name ?? null,
+            /** True when a journey step deliberately asked for a person. */
+            needsPerson: session.status === "HANDED_OFF",
+          }
+        : null,
+    };
+  });
 }
 
 export async function getConversation(id: string) {

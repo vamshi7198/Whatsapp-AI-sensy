@@ -43,6 +43,15 @@ export default async function ContactsPage({
     page: params.page,
   });
 
+  // Every filter the page is showing, so the export matches what is on screen.
+  // Tags were previously left out entirely, which meant narrowing to one tag
+  // and exporting quietly produced the whole database.
+  const exportParams = new URLSearchParams();
+  if (filter.search) exportParams.set("search", filter.search);
+  if (filter.optInStatus) exportParams.set("optIn", filter.optInStatus);
+  if (filter.source) exportParams.set("source", filter.source);
+  for (const tagId of filter.tagIds ?? []) exportParams.append("tag", tagId);
+
   const [result, tags, sources, counts, defaultOptIn] = await Promise.all([
     listContacts(filter),
     listTags(),
@@ -71,17 +80,27 @@ export default async function ContactsPage({
         <div className="flex items-center gap-2">
           {can(user, "contact:export") && result.total > 0 && (
             <a
-              href={`/api/contacts/export?${new URLSearchParams(
-                Object.entries({
-                  search: filter.search ?? "",
-                  optIn: filter.optInStatus ?? "",
-                  source: filter.source ?? "",
-                }).filter(([, v]) => v) as [string, string][],
-              ).toString()}`}
+              href={`/api/contacts/export?${exportParams.toString()}`}
               className={buttonVariants({ variant: "secondary" })}
             >
               Export CSV
+              {/*
+                Says what will actually come out. The tag filter used not to
+                reach the export at all, so narrowing to one tag and clicking
+                this returned the whole database — with nothing to reveal it
+                until someone counted the rows.
+              */}
+              {result.total !== counts.total && (
+                <span className="ml-1 opacity-70">
+                  ({formatNumber(result.total)})
+                </span>
+              )}
             </a>
+          )}
+          {can(user, "tag:view") && (
+            <Link href="/contacts/tags">
+              <Button variant="secondary">Tags</Button>
+            </Link>
           )}
           {can(user, "contact:import") && (
             <Link href="/contacts/import">

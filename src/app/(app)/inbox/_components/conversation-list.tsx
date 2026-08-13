@@ -164,6 +164,25 @@ export function ConversationList({
                           </span>
                         )}
                       </div>
+
+                      {/*
+                        Where a journey has got to. Without it an agent replies
+                        into a conversation a journey is mid-sentence in, and a
+                        handoff tells nobody it happened.
+                      */}
+                      {c.journey && (
+                        <p
+                          className={`mt-0.5 truncate text-[11px] ${
+                            c.journey.needsPerson
+                              ? "font-medium text-amber-700 dark:text-amber-400"
+                              : "text-slate-400"
+                          }`}
+                        >
+                          {c.journey.needsPerson ? "Needs a person · " : ""}
+                          {c.journey.name}
+                          {c.journey.step ? ` · ${c.journey.step}` : ""}
+                        </p>
+                      )}
                     </div>
                   </Link>
                 </li>

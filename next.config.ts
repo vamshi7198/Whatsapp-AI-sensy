@@ -25,6 +25,21 @@ const securityHeaders = [
 const nextConfig: NextConfig = {
   serverExternalPackages: ["@node-rs/argon2", "pino", "bullmq"],
 
+  experimental: {
+    serverActions: {
+      /**
+       * Contact imports are uploaded through a server action, and the default
+       * ceiling here is 1 MB — well under the 10 MB the importer itself
+       * accepts and validates. A larger CSV therefore failed before any of
+       * our own checks ran, with a framework error rather than an explanation.
+       *
+       * Matched to IMPORT_LIMITS.MAX_FILE_BYTES, so the limit an operator is
+       * told about is the limit they actually hit.
+       */
+      bodySizeLimit: "10mb",
+    },
+  },
+
   async headers() {
     return [{ source: "/:path*", headers: securityHeaders }];
   },
