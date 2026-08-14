@@ -6,6 +6,7 @@ import { maskPhone, moduleLogger } from "../logger";
 import { getProvider } from "../whatsapp";
 import { INTERACTIVE_LIMITS } from "../whatsapp/types";
 import { readContactField, writeContactField } from "./contact-fields";
+import { checkOutboundUrl, renderUrl } from "./outbound-url";
 import {
   optionsForStep,
   readAskQuestion,
@@ -891,6 +892,19 @@ async function callWebhook(
   const config = readWebhook(step.config);
   if (!config.url) return;
 
+  // Checked here, at the moment of the request — not only when the journey was
+  // published. The address is built by filling in a customer's answers, so the
+  // URL about to be fetched is not the URL that was validated.
+  const target = checkOutboundUrl(renderUrl(config.url, { ...context }));
+
+  if (!target.ok) {
+    log.warn(
+      { stepId: step.id, reason: target.reason },
+      "Refused to call a web address from a journey",
+    );
+    return;
+  }
+
   const contact = await prisma.contact.findUnique({
     where: { id: session.contactId },
     select: { phoneE164: true, name: true, email: true },
@@ -908,11 +922,14 @@ async function callWebhook(
   const timeout = setTimeout(() => controller.abort(), 10_000);
 
   try {
-    await fetch(render(config.url, variables), {
+    await fetch(target.url as URL, {
       method: config.method,
       headers: { "Content-Type": "application/json" },
       ...(config.method === "POST" ? { body: JSON.stringify(body) } : {}),
       signal: controller.signal,
+      // A redirect is a second address nobody validated, and following one is
+      // how a blocked host gets reached anyway.
+      redirect: "manual",
     });
   } catch (error) {
     log.warn(
