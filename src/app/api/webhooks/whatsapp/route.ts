@@ -15,6 +15,15 @@ import { parseMetaWebhook } from "@/lib/whatsapp/providers/meta/mappers";
 const log = moduleLogger("webhook");
 
 /**
+ * The most this endpoint will read from a request.
+ *
+ * The largest payload this system has ever stored is about 2 KB, so a megabyte
+ * is enormous headroom for anything Meta legitimately sends while still being
+ * a bound.
+ */
+const MAX_WEBHOOK_BYTES = 1024 * 1024;
+
+/**
  * Meta WhatsApp Cloud API webhook.
  *
  * This endpoint is deliberately exempt from session auth and CSRF — it is
@@ -92,10 +101,34 @@ export async function GET(request: Request) {
  * POST — incoming messages and delivery status updates.
  */
 export async function POST(request: Request) {
+  // Refused on size before a byte is buffered.
+  //
+  // This URL is public by design — Meta has to reach it — and the check below
+  // cannot run until the whole body is in memory, so an unbounded read happens
+  // BEFORE anything is verified. One Node process serves the inbox, campaign
+  // sending and this endpoint, so filling its heap stops all three.
+  //
+  // Next.js's bodySizeLimit applies to Server Actions, not route handlers, and
+  // there is no middleware, so nothing else was stopping it. 1 MB is enormous
+  // headroom: the largest payload this system has ever stored is about 2 KB.
+  const declared = Number(request.headers.get("content-length") ?? 0);
+
+  if (declared > MAX_WEBHOOK_BYTES) {
+    log.warn({ bytes: declared }, "Rejected an oversized webhook body");
+    return new NextResponse("Payload too large", { status: 413 });
+  }
+
   // The signature is computed over the exact bytes Meta sent. Parsing the JSON
   // and re-serialising it changes those bytes and breaks verification, so the
   // raw body must be read first and parsed only afterwards.
   const rawBody = Buffer.from(await request.arrayBuffer());
+
+  // Content-Length can be absent or untrue, and a chunked request carries no
+  // length at all — so the real size is checked too, once it is known.
+  if (rawBody.length > MAX_WEBHOOK_BYTES) {
+    log.warn({ bytes: rawBody.length }, "Rejected an oversized webhook body");
+    return new NextResponse("Payload too large", { status: 413 });
+  }
   const signature = request.headers.get("x-hub-signature-256") ?? "";
 
   if (!verifySignature(rawBody, signature)) {

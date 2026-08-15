@@ -44,11 +44,25 @@ export interface AudiencePreview {
   };
 }
 
+/**
+ * How many numbers one audience upload may carry.
+ *
+ * Well under Postgres' 65,535 bind parameters even before chunking, and far
+ * more than any single Uncanned campaign. The point of a stated limit is that
+ * exceeding it says so, instead of failing as an unexplained driver error.
+ */
+const MAX_AUDIENCE_UPLOAD = 50_000;
+
+/** Numbers looked up per query, so the `in` list stays comfortably bounded. */
+const LOOKUP_CHUNK = 5_000;
+
 const audienceSchema = z.object({
   type: z.enum(["ALL_CONTACTS", "TAG", "TAGS", "SELECTED", "CSV_UPLOAD"]),
   tagIds: z.array(z.string()).optional(),
   match: z.enum(["any", "all"]).optional(),
-  contactIds: z.array(z.string()).optional(),
+  // Bounded for the same reason: this arrives as JSON from the browser and
+  // becomes an `in` list further down.
+  contactIds: z.array(z.string()).max(MAX_AUDIENCE_UPLOAD).optional(),
 });
 
 /**
@@ -298,10 +312,32 @@ export async function resolveCsvAudience(
 
     const unique = [...new Set(phones)];
 
-    const contacts = await prisma.contact.findMany({
-      where: { phoneE164: { in: unique }, deletedAt: null },
-      select: { id: true, phoneE164: true },
-    });
+    if (unique.length > MAX_AUDIENCE_UPLOAD) {
+      return {
+        error: `That file has ${unique.length.toLocaleString("en-IN")} numbers. Split it into files of ${MAX_AUDIENCE_UPLOAD.toLocaleString("en-IN")} or fewer and send one campaign per file.`,
+        invalid,
+      };
+    }
+
+    // Looked up in chunks.
+    //
+    // A single `in` of every number becomes one bind parameter each, and
+    // Postgres accepts 65,535 in a statement — so a 5 MB file of numbers, which
+    // is exactly the AiSensy-migration case this feature exists for, failed
+    // with a driver error and a generic "could not read that file".
+    const contacts: Array<{ id: string; phoneE164: string }> = [];
+
+    for (let i = 0; i < unique.length; i += LOOKUP_CHUNK) {
+      const found = await prisma.contact.findMany({
+        where: {
+          phoneE164: { in: unique.slice(i, i + LOOKUP_CHUNK) },
+          deletedAt: null,
+        },
+        select: { id: true, phoneE164: true },
+      });
+
+      contacts.push(...found);
+    }
 
     const foundNumbers = new Set(contacts.map((c) => c.phoneE164));
     const missing = unique.filter((p) => !foundNumbers.has(p));

@@ -1,5 +1,8 @@
 "use server";
 
+import { createHash } from "node:crypto";
+
+import { Prisma } from "@prisma/client";
 import { revalidatePath } from "next/cache";
 
 import { audit } from "@/lib/audit";
@@ -15,6 +18,66 @@ import { slugify } from "@/lib/contacts/schema";
 import { moduleLogger } from "@/lib/logger";
 
 const log = moduleLogger("import");
+
+/**
+ * Finds or creates a tag, tolerating two names that slugify the same.
+ *
+ * Tag.slug is unique and slugify is lossy: "VIP List" and "vip-list" both
+ * become "vip-list", and any two names made only of emoji or non-Latin script
+ * both become "". A plain upsert on the NAME therefore succeeded for the first
+ * and threw P2002 on the SLUG for the second — which unwound to the outer
+ * catch, imported nothing at all, left the ImportJob RUNNING forever, and
+ * reproduced exactly on every retry.
+ *
+ * Returns null if it truly cannot, so one awkward tag costs its own label
+ * rather than the entire file.
+ */
+async function ensureTag(name: string): Promise<string | null> {
+  const existing = await prisma.tag.findUnique({
+    where: { name },
+    select: { id: true },
+  });
+
+  if (existing) return existing.id;
+
+  // An empty slug is not a usable fallback — every emoji-only name would
+  // collide with every other. Derived from the name so it is stable across
+  // imports of the same file.
+  const base =
+    slugify(name) ||
+    `tag-${createHash("sha1").update(name).digest("hex").slice(0, 8)}`;
+
+  for (let attempt = 0; attempt < 25; attempt += 1) {
+    const slug = attempt === 0 ? base : `${base}-${attempt + 1}`;
+
+    try {
+      const tag = await prisma.tag.create({
+        data: { name, slug },
+        select: { id: true },
+      });
+      return tag.id;
+    } catch (error) {
+      if (
+        !(error instanceof Prisma.PrismaClientKnownRequestError) ||
+        error.code !== "P2002"
+      ) {
+        throw error;
+      }
+
+      // Either another import just created this exact name, or the slug is
+      // taken by a different name. The first is a win; the second needs the
+      // next suffix.
+      const now = await prisma.tag.findUnique({
+        where: { name },
+        select: { id: true },
+      });
+
+      if (now) return now.id;
+    }
+  }
+
+  return null;
+}
 
 export interface PreviewState {
   error?: string;
@@ -92,6 +155,9 @@ export async function runImport(
   _prev: ImportState,
   formData: FormData,
 ): Promise<ImportState> {
+  /** Set once the job row exists, so a failure can close it off. */
+  let jobId: string | null = null;
+
   try {
     const user = await requireApiAuth("contact:import");
 
@@ -128,18 +194,26 @@ export async function runImport(
       },
     });
 
+    // Kept outside the try's scope so the catch can close the job off. A
+    // failure used to leave it RUNNING forever, which reads on the imports
+    // list as an import still in progress that will never finish.
+    jobId = job.id;
+
     // Resolve every tag name in the file up front, so N rows do not cause N
     // tag lookups.
     const tagNames = [...new Set(parsed.rows.flatMap((r) => r.tags))];
     const tagIdByName = new Map<string, string>();
 
     for (const name of tagNames) {
-      const tag = await prisma.tag.upsert({
-        where: { name },
-        update: {},
-        create: { name, slug: slugify(name) },
-      });
-      tagIdByName.set(name, tag.id);
+      const id = await ensureTag(name);
+
+      // A tag that cannot be created must not take the whole import with it.
+      // The contacts still import; they just miss that one label, which is
+      // recoverable in a way that "nothing imported" is not.
+      if (id) tagIdByName.set(name, id);
+      else {
+        log.warn({ tag: name }, "Could not create tag during import — skipped");
+      }
     }
 
     let created = 0;
@@ -265,6 +339,13 @@ export async function runImport(
       { err: error instanceof Error ? error.message : error },
       "Import failed",
     );
+
+    if (jobId) {
+      await prisma.importJob
+        .update({ where: { id: jobId }, data: { status: "FAILED", completedAt: new Date() } })
+        .catch(() => undefined);
+    }
+
     return { error: "The import could not be completed. Please try again." };
   }
 }

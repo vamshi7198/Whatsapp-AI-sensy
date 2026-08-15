@@ -16,6 +16,23 @@ export const IMPORT_LIMITS = {
   MAX_ROWS: 50_000,
 } as const;
 
+/*
+  Per-field caps.
+
+  The manual add form limits a name to 120 characters and the import path
+  limited nothing, while Contact.name is `text`. A cell holding a pasted
+  paragraph — or a whole column merged into one field by a bad export — was
+  stored in full and then rendered in the contact list, the inbox, and every
+  campaign preview.
+*/
+
+/** Matches the cap the manual add form already applies. */
+const MAX_NAME = 120;
+const MAX_ATTRIBUTE_KEY = 64;
+const MAX_ATTRIBUTE_VALUE = 512;
+/** Unmapped columns kept per row, so a 200-column export cannot bloat a row. */
+const MAX_ATTRIBUTES = 30;
+
 /** Header aliases seen in real exports (AiSensy, Google Contacts, Excel). */
 const COLUMN_ALIASES: Record<string, string[]> = {
   name: ["name", "full name", "fullname", "contact name", "first name"],
@@ -160,16 +177,37 @@ export function parseContactCsv(
       });
     }
 
+    /*
+      Capped, because none of this was.
+
+      The manual add form limits a name to 120 characters; the import path did
+      not, and Contact.name is `text` — so a spreadsheet cell containing a
+      pasted paragraph, or a whole column accidentally merged into one field,
+      was stored in full and then rendered in the contact list, the inbox and
+      every campaign preview.
+
+      Truncating beats rejecting here: the row is somebody's real phone number,
+      and losing the contact over an oversized notes column would be the worse
+      trade.
+    */
     const attributes: Record<string, string> = {};
+    let attributeCount = 0;
+
     for (const [key, value] of Object.entries(record)) {
-      if (!mappedColumns.has(key) && value?.trim()) {
-        attributes[key] = value.trim();
-      }
+      if (mappedColumns.has(key) || !value?.trim()) continue;
+      if (attributeCount >= MAX_ATTRIBUTES) break;
+
+      attributes[key.slice(0, MAX_ATTRIBUTE_KEY)] = value
+        .trim()
+        .slice(0, MAX_ATTRIBUTE_VALUE);
+      attributeCount += 1;
     }
 
     const row: ParsedContactRow = {
       line,
-      name: mapping.name ? record[mapping.name]?.trim() || null : null,
+      name: mapping.name
+        ? record[mapping.name]?.trim().slice(0, MAX_NAME) || null
+        : null,
       phoneE164: phoneResult.e164,
       phoneCountry: phoneResult.country ?? null,
       email,
