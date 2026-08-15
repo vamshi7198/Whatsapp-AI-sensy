@@ -255,19 +255,51 @@ export async function recoverUnprocessedEvents(): Promise<ProcessResult> {
     return { processed: 0, duplicates: 0, failed: 0 };
   }
 
+  // Claimed before any work, so two overlapping runs cannot both apply them.
+  //
+  // PROCESSING existed in the enum and was read in two places but written by
+  // nobody, so the claim it was designed for had never been implemented. The
+  // five-minute scheduled task and a manual `npm run recover` — which
+  // update.ps1 runs on every deploy — can easily overlap. The strong guards
+  // held, so nobody received a duplicate message, but unreadCount,
+  // repliedCount, the delivery counters and estimated spend all drifted.
+  //
+  // Row at a time, filtered on the exact status just read: a batch updateMany
+  // would say how many it claimed but not WHICH, leaving no way to tell the
+  // rows this run owns from the ones another run took a moment earlier. A
+  // row abandoned as PROCESSING by a run that died is picked up again,
+  // because it is selected above and its own status still matches.
+  //
+  // Also makes the PROCESSING count on /api/health mean something rather
+  // than being permanently zero.
+  const mine: typeof pending = [];
+
+  for (const row of pending) {
+    const won = await prisma.webhookEvent.updateMany({
+      where: { id: row.id, status: row.status },
+      data: { status: "PROCESSING" },
+    });
+
+    if (won.count === 1) mine.push(row);
+  }
+
+  if (mine.length === 0) {
+    return { processed: 0, duplicates: 0, failed: 0 };
+  }
+
   log.warn(
-    { count: pending.length },
+    { found: pending.length, claimed: mine.length },
     "Found stored events that were never applied — recovering",
   );
 
   // Only the events actually awaiting work. One stored payload can contain
   // several events, and the others already ran — re-applying them would be
   // harmless but wasteful, and would make the recovered count a lie.
-  const wanted = new Set(pending.map((row) => row.dedupeKey));
+  const wanted = new Set(mine.map((row) => row.dedupeKey));
   const seen = new Set<string>();
   const events: NormalisedWebhookEvent[] = [];
 
-  for (const row of pending) {
+  for (const row of mine) {
     for (const event of parseMetaWebhook(row.payload)) {
       const key = buildDedupeKey(event);
       if (!wanted.has(key) || seen.has(key)) continue;
@@ -276,12 +308,12 @@ export async function recoverUnprocessedEvents(): Promise<ProcessResult> {
     }
   }
 
-  if (events.length < pending.length) {
+  if (events.length < mine.length) {
     // Rows written before the payload fix hold only the inner message, which
     // this parser cannot read. Nothing is lost — the row is still there — but
     // it cannot be replayed, and saying so is better than a silent zero.
     log.warn(
-      { pending: pending.length, readable: events.length },
+      { pending: mine.length, readable: events.length },
       "Some stored events could not be re-read and were not recovered",
     );
   }
@@ -361,6 +393,14 @@ async function applyInboundMessage(
 
   const windowExpiry = new Date(event.timestamp.getTime() + SERVICE_WINDOW_MS);
 
+  // Note what is NOT here any more: unreadCount.
+  //
+  // Everything in this upsert is an absolute write, so running it twice leaves
+  // the same result. The unread increment was not, and it sat before the
+  // message insert that dedupes — so a redelivered webhook, or the recovery
+  // sweep re-running a stored event, bumped the badge again for a message
+  // already in the thread. It is applied below, once the insert has proved
+  // this message is genuinely new.
   const conversation = await prisma.conversation.upsert({
     where: { contactId: contact.id },
     update: {
@@ -368,7 +408,6 @@ async function applyInboundMessage(
       lastMessageAt: event.timestamp,
       lastInboundAt: event.timestamp,
       serviceWindowExpiresAt: windowExpiry,
-      unreadCount: { increment: 1 },
     },
     create: {
       contactId: contact.id,
@@ -376,11 +415,11 @@ async function applyInboundMessage(
       lastMessageAt: event.timestamp,
       lastInboundAt: event.timestamp,
       serviceWindowExpiresAt: windowExpiry,
-      unreadCount: 1,
+      unreadCount: 0,
     },
   });
 
-  await prisma.message.createMany({
+  const inserted = await prisma.message.createMany({
     data: [
       {
         wamid: event.externalMessageId,
@@ -399,6 +438,29 @@ async function applyInboundMessage(
     ],
     skipDuplicates: true,
   });
+
+  // Counted once per message that was actually new.
+  //
+  // Deliberately NOT an early return for everything below. Meta redelivers for
+  // up to seven days and recoverUnprocessedEvents replays stored events on
+  // purpose, and a replay usually happens precisely because the first attempt
+  // failed part-way — so the journey advance and the automations further down
+  // still need to run. They carry their own idempotency (JourneyEvent and
+  // AutomationRun unique keys); the unread badge does not, which is why only
+  // this one is gated.
+  const isNew = inserted.count === 1;
+
+  if (isNew) {
+    await prisma.conversation.update({
+      where: { id: conversation.id },
+      data: { unreadCount: { increment: 1 } },
+    });
+  } else {
+    log.debug(
+      { wamid: event.externalMessageId },
+      "Inbound message already recorded — re-applying the rest in case it did not finish",
+    );
+  }
 
   await handleOptOutKeyword(event, contact.id);
   await recordCampaignReply(contact.id, event.timestamp);
@@ -506,6 +568,18 @@ async function handleOptOutKeyword(
 
   if (!keywords.includes(normalised)) return;
 
+  // One audit row per message, however many times that message arrives.
+  //
+  // The flag is an absolute write and re-applying it changes nothing, but the
+  // audit row was created unconditionally — so a redelivered webhook, or the
+  // recovery sweep, filed a second record of the same request. That trail is
+  // what proves the customer asked to stop, and duplicates in it make it
+  // harder to read exactly when someone is relying on it.
+  const alreadyRecorded = await prisma.optOut.findFirst({
+    where: { contactId, sourceMessageId: event.externalMessageId },
+    select: { id: true },
+  });
+
   // The flag and the audit trail are written together: the flag is what the
   // send query reads, the trail is what proves the request if challenged.
   await prisma.$transaction([
@@ -517,17 +591,21 @@ async function handleOptOutKeyword(
         optInStatus: "OPTED_OUT",
       },
     }),
-    prisma.optOut.create({
-      data: {
-        contactId,
-        phoneE164: event.from,
-        scope: "MARKETING",
-        keyword: normalised,
-        reason: "Customer replied with an opt-out keyword",
-        sourceMessageId: event.externalMessageId,
-        createdAt: event.timestamp,
-      },
-    }),
+    ...(alreadyRecorded
+      ? []
+      : [
+          prisma.optOut.create({
+            data: {
+              contactId,
+              phoneE164: event.from,
+              scope: "MARKETING",
+              keyword: normalised,
+              reason: "Customer replied with an opt-out keyword",
+              sourceMessageId: event.externalMessageId,
+              createdAt: event.timestamp,
+            },
+          }),
+        ]),
   ]);
 
   log.info(
@@ -558,16 +636,23 @@ async function recordCampaignReply(
 
   // repliedAt is set once, so later messages in the same conversation do not
   // keep inflating the campaign's reply count.
-  await prisma.$transaction([
-    prisma.campaignRecipient.update({
-      where: { id: recipient.id },
-      data: { repliedAt: at },
-    }),
-    prisma.campaign.update({
-      where: { id: recipient.campaignId },
-      data: { repliedCount: { increment: 1 } },
-    }),
-  ]);
+  //
+  // The comment above has always said that; the code did not do it. The read
+  // and the write sat in separate transactions with no guard on the write, so
+  // two messages arriving close together both found repliedAt null and both
+  // incremented — and a replayed webhook did the same. The filter is now on
+  // the write itself, which is the only place it can actually hold.
+  const claimed = await prisma.campaignRecipient.updateMany({
+    where: { id: recipient.id, repliedAt: null },
+    data: { repliedAt: at },
+  });
+
+  if (claimed.count === 0) return;
+
+  await prisma.campaign.update({
+    where: { id: recipient.campaignId },
+    data: { repliedCount: { increment: 1 } },
+  });
 }
 
 /* ------------------------------------------------------------------ */
