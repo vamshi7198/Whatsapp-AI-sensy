@@ -218,6 +218,22 @@ function MappingStep({
         ))}
       </div>
 
+      {/*
+        Above the sample rows, because the sample is what looks wrong and this
+        is why. Without it somebody sees their address column holding a tag and
+        has no way to tell whether the file is broken or the app is.
+      */}
+      {preview.structureWarning && (
+        <div className="rounded-lg border border-amber-300 bg-amber-50 px-3 py-2.5 text-sm dark:border-amber-900 dark:bg-amber-950/50">
+          <p className="font-medium text-amber-900 dark:text-amber-200">
+            Some lines in this file do not line up with its columns
+          </p>
+          <p className="mt-1 text-amber-800 dark:text-amber-300">
+            {preview.structureWarning}
+          </p>
+        </div>
+      )}
+
       {preview.sampleRows && preview.sampleRows.length > 0 && (
         <div>
           <p className="mb-2 text-sm font-medium text-slate-700 dark:text-slate-300">

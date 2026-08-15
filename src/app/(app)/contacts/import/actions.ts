@@ -3,6 +3,7 @@
 import { createHash } from "node:crypto";
 
 import { Prisma } from "@prisma/client";
+import Papa from "papaparse";
 import { revalidatePath } from "next/cache";
 
 import { audit } from "@/lib/audit";
@@ -84,6 +85,8 @@ export interface PreviewState {
   headers?: string[];
   suggested?: Partial<ColumnMapping>;
   sampleRows?: Record<string, string>[];
+  /** Set when the file's own structure is wrong, e.g. an unquoted comma. */
+  structureWarning?: string;
   csvText?: string;
   totalRows?: number;
 }
@@ -107,34 +110,64 @@ export async function previewCsv(
   }
 
   const text = await file.text();
-  const firstLine = text.split(/\r?\n/, 1)[0] ?? "";
-  if (!firstLine.trim()) {
+
+  if (!text.trim()) {
     return { error: "That file appears to be empty." };
   }
 
-  const headers = firstLine
-    .split(",")
-    .map((h) => h.trim().replace(/^"|"$/g, ""))
-    .filter(Boolean);
+  /*
+    The same parser the import uses, not a split on commas.
+
+    This used to do `line.split(",")`, which has no idea what a quoted field
+    is — so a cell reading "pilot,influencers,hyderabad" became three columns
+    and everything after it appeared shifted by two. That is a fair description
+    of a BROKEN file and a completely false one of a correct file, and the
+    preview showed it for both.
+
+    Which made the preview worse than useless on the one job it has: somebody
+    quoting their file properly saw the identical mess and concluded the fix
+    had not worked. The preview must show what the import will actually see.
+  */
+  const parsed = Papa.parse<Record<string, unknown>>(text, {
+    header: true,
+    skipEmptyLines: "greedy",
+    transformHeader: (h) => h.trim(),
+  });
+
+  const headers = (parsed.meta.fields ?? []).filter(Boolean);
 
   if (headers.length === 0) {
     return { error: "Could not read column headings from that file." };
   }
 
-  // Parse a few rows purely to show a preview; full validation happens after
-  // the user confirms the mapping.
-  const sampleLines = text.split(/\r?\n/).slice(0, 6);
-  const sampleRows = sampleLines.slice(1).filter(Boolean).map((line) => {
-    const cells = line.split(",").map((c) => c.trim().replace(/^"|"$/g, ""));
-    return Object.fromEntries(headers.map((h, i) => [h, cells[i] ?? ""]));
-  });
+  // A row carrying more values than there are columns. Said here, at the
+  // preview, rather than leaving it to be discovered at import — this is the
+  // screen where somebody is looking at their data and can still fix it.
+  const ragged = parsed.data.findIndex(
+    (row) => Array.isArray(row.__parsed_extra) && row.__parsed_extra.length > 0,
+  );
+
+  const structureWarning =
+    ragged === -1
+      ? undefined
+      : `Line ${ragged + 2} has more values than the file has columns, so its ` +
+        `values have shifted along. A cell containing a comma must be wrapped ` +
+        `in quotes — check the tags and address columns. Rows like this will ` +
+        `be refused rather than imported with the wrong values.`;
+
+  const sampleRows = parsed.data.slice(0, 5).map((row) =>
+    Object.fromEntries(
+      headers.map((h) => [h, typeof row[h] === "string" ? (row[h] as string) : ""]),
+    ),
+  );
 
   return {
     headers,
     suggested: suggestMapping(headers),
     sampleRows,
+    structureWarning,
     csvText: text,
-    totalRows: text.split(/\r?\n/).filter((l) => l.trim()).length - 1,
+    totalRows: parsed.data.length,
   };
 }
 
