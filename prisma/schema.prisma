@@ -839,6 +839,11 @@ model JourneySession {
 
   /// Set by a WAIT step. The scheduler wakes sessions whose time has come.
   resumeAt DateTime?
+  /// Set while a step is waiting to be TRIED AGAIN after a retryable failure,
+  /// as opposed to waiting on a WAIT step. resumeDueSessions moves past a wait
+  /// before running on, which for a failed send would skip it and carry on as
+  /// though the customer had been messaged.
+  retryingStepId String?
 
   /// Why it ended, for the operator rather than for the code.
   endedReason String?

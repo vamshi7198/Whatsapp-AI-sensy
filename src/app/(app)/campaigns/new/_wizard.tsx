@@ -204,6 +204,25 @@ export function CampaignWizard({
       <StepBar current={step} />
 
       <div className="rounded-xl border border-slate-200 bg-white p-5 dark:border-slate-800 dark:bg-slate-900">
+        {/*
+          Above the step switch, not inside step 5.
+
+          runPreview only advances the step when there is no error, so a failed
+          preview left the wizard on step 4 — while this banner lived inside the
+          step-5 block it had just been prevented from reaching. The button
+          flickered "Checking…", returned to "Continue", and nothing else
+          happened: no message, no reason, no hint that the template had been
+          paused by Meta while the wizard sat open. The campaign silently never
+          went out.
+
+          Rendered here it appears on whichever step the wizard is stuck on.
+        */}
+        {step !== 5 && preview.error && (
+          <p className="mb-4 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700 dark:border-red-900 dark:bg-red-950 dark:text-red-300">
+            {preview.error}
+          </p>
+        )}
+
         {/* ---------- 1. Name ---------- */}
         {step === 1 && (
           <div className="space-y-4">

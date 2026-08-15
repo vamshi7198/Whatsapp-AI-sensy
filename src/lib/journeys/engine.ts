@@ -67,6 +67,46 @@ const MAX_STEPS_PER_RUN = 25;
  * HANDED_OFF belongs here: a human has taken that conversation over, and
  * starting the automation again would have the bot talking across them.
  */
+/**
+ * A step failed for a reason that may not still be true in a few minutes.
+ *
+ * Thrown instead of a plain Error when Meta's own classification says the
+ * failure is retryable — a 5xx, a dropped connection, a rate limit. Every
+ * throw used to end the session FAILED regardless, so a one-minute Meta
+ * outage abandoned people mid-conversation and, before the partial index
+ * landed, barred them from that journey for good. The message shown even
+ * said "This will retry automatically", which on that path was untrue.
+ */
+class RetryableStepError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "RetryableStepError";
+  }
+}
+
+/**
+ * Turns a refused send into the right kind of error.
+ *
+ * Meta's own classification decides: a 5xx, a dropped connection or a rate
+ * limit becomes something the session can wait out, anything else ends it.
+ * Note this is only reached for `accepted === false` — an "unknown" outcome
+ * never comes here, because a send that may have gone out must never be
+ * repeated.
+ */
+function sendFailure(error: { userMessage: string; retryable: boolean }): Error {
+  return error.retryable
+    ? new RetryableStepError(error.userMessage)
+    : new Error(error.userMessage);
+}
+
+/** How many times one step may fail retryably before the session gives up. */
+const MAX_STEP_ATTEMPTS = 4;
+
+/** Waits between those attempts: 2, 8, 32 minutes. */
+function stepBackoffMs(attempt: number): number {
+  return Math.min(2 * 60_000 * 4 ** (attempt - 1), 60 * 60_000);
+}
+
 const IN_FLIGHT: JourneySessionStatus[] = [
   "ACTIVE",
   "WAITING_FOR_REPLY",
@@ -573,6 +613,46 @@ export async function runFrom(sessionId: string): Promise<void> {
       const message = error instanceof Error ? error.message : String(error);
 
       await recordRun(sessionId, step.id, "FAILED", message);
+
+      if (error instanceof RetryableStepError) {
+        // Counted from the runs already recorded, so no extra column is
+        // needed and the count resets naturally when the session moves on.
+        const attempts = await prisma.journeyStepRun.count({
+          where: { sessionId, stepId: step.id, status: "FAILED" },
+        });
+
+        if (attempts < MAX_STEP_ATTEMPTS) {
+          const resumeAt = new Date(Date.now() + stepBackoffMs(attempts));
+
+          // Parked on the SAME step, flagged as a retry.
+          //
+          // WAITING_UNTIL is already swept by resumeDueSessions, but that
+          // sweep moves PAST the current step before running on — correct for
+          // a wait, and wrong here, where it would skip the send and carry on
+          // as though the customer had been messaged. retryingStepId is what
+          // tells the sweep to run this step again instead.
+          await prisma.journeySession.update({
+            where: { id: sessionId },
+            data: {
+              status: "WAITING_UNTIL",
+              resumeAt,
+              retryingStepId: step.id,
+            },
+          });
+
+          log.warn(
+            { sessionId, stepId: step.id, attempts, resumeAt, err: message },
+            "Journey step failed for a retryable reason — will try again",
+          );
+          return;
+        }
+
+        log.error(
+          { sessionId, stepId: step.id, attempts },
+          "Journey step still failing after every attempt — ending session",
+        );
+      }
+
       await endSession(sessionId, "FAILED", message);
 
       log.error(
@@ -830,7 +910,7 @@ async function sendTemplateStep(
   });
 
   if (result.accepted === false) {
-    throw new Error(result.error.userMessage);
+    throw sendFailure(result.error);
   }
 
   const wamid = result.accepted === true ? result.externalMessageId : null;
@@ -907,7 +987,7 @@ async function sendConversationalStep(
       ...(config.filename ? { filename: config.filename } : {}),
     });
 
-    if (result.accepted === false) throw new Error(result.error.userMessage);
+    if (result.accepted === false) throw sendFailure(result.error);
 
     const wamid = result.accepted === true ? result.externalMessageId : null;
     await recordSentMessage(session, step, contact.conversation?.id, wamid, config.type);
@@ -930,7 +1010,7 @@ async function sendConversationalStep(
       body,
     });
 
-    if (result.accepted === false) throw new Error(result.error.userMessage);
+    if (result.accepted === false) throw sendFailure(result.error);
 
     const wamid = result.accepted === true ? result.externalMessageId : null;
     await recordSentMessage(session, step, contact.conversation?.id, wamid, "text", body);
@@ -955,7 +1035,7 @@ async function sendConversationalStep(
   // No choice offered: a statement, so the journey carries on.
   if (options.length === 0) {
     const result = await provider.sendTextMessage({ to: contact.phoneE164, body });
-    if (result.accepted === false) throw new Error(result.error.userMessage);
+    if (result.accepted === false) throw sendFailure(result.error);
 
     const wamid = result.accepted === true ? result.externalMessageId : null;
     await recordSentMessage(session, step, contact.conversation?.id, wamid, "text", body);
@@ -1012,7 +1092,7 @@ async function sendConversationalStep(
             : {}),
         });
 
-  if (result.accepted === false) throw new Error(result.error.userMessage);
+  if (result.accepted === false) throw sendFailure(result.error);
 
   const wamid = result.accepted === true ? result.externalMessageId : null;
   await recordSentMessage(session, step, contact.conversation?.id, wamid, "interactive", body);
@@ -1206,27 +1286,51 @@ async function endSession(
 export async function resumeDueSessions(): Promise<number> {
   const due = await prisma.journeySession.findMany({
     where: { status: "WAITING_UNTIL", resumeAt: { lte: new Date() } },
-    select: { id: true, currentStepId: true },
+    select: { id: true, currentStepId: true, retryingStepId: true },
     take: 100,
   });
 
   let resumed = 0;
 
   for (const session of due) {
-    // Move past the wait step itself before running on.
-    const next = session.currentStepId
-      ? await nextStepId(session.currentStepId, null)
-      : null;
+    // A step waiting to be tried again stays where it is; only a genuine WAIT
+    // step is stepped past. Getting this backwards would skip a failed send
+    // and carry on as though the customer had received it.
+    const retrying =
+      session.retryingStepId !== null &&
+      session.retryingStepId === session.currentStepId;
 
-    if (!next) {
-      await endSession(session.id, "COMPLETED", "Reached the end.");
-      continue;
+    let next = session.currentStepId;
+
+    if (!retrying) {
+      next = session.currentStepId
+        ? await nextStepId(session.currentStepId, null)
+        : null;
+
+      if (!next) {
+        await endSession(session.id, "COMPLETED", "Reached the end.");
+        continue;
+      }
     }
 
-    await prisma.journeySession.update({
-      where: { id: session.id },
-      data: { currentStepId: next, status: "ACTIVE", resumeAt: null },
+    // Claimed, not just checked.
+    //
+    // Two scheduler passes can overlap — repair.ps1 unregisters the running
+    // task and immediately registers one that fires at once, and repair.ps1 is
+    // what the owner is told to run when things look wrong. Without a claim
+    // both passes flipped the session to ACTIVE, both cleared the guard, and
+    // both sent. Filtering on WAITING_UNTIL means exactly one wins.
+    const claimed = await prisma.journeySession.updateMany({
+      where: { id: session.id, status: "WAITING_UNTIL" },
+      data: {
+        currentStepId: next,
+        status: "ACTIVE",
+        resumeAt: null,
+        retryingStepId: null,
+      },
     });
+
+    if (claimed.count === 0) continue;
 
     await runFrom(session.id);
     resumed += 1;
