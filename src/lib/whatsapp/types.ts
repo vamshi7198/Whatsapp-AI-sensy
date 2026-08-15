@@ -124,6 +124,18 @@ export const INTERACTIVE_LIMITS = {
   MAX_FOOTER: 60,
 } as const;
 
+/**
+ * A plain text message allows four times what an interactive one does.
+ *
+ * The gap matters because the same journey step can send either: with no
+ * options it is a text message, and adding a single button drops the ceiling
+ * to 1024. A body that has always been fine can therefore become too long
+ * because someone added a button to it.
+ */
+export const TEXT_LIMITS = {
+  MAX_BODY: 4096,
+} as const;
+
 /** Up to three buttons under a message. Free-form: needs the 24-hour window. */
 export interface SendButtonsInput {
   to: string;

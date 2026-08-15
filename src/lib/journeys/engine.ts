@@ -4,7 +4,8 @@ import { prisma } from "../db";
 import { getServiceWindow } from "../inbox/service";
 import { maskPhone, moduleLogger } from "../logger";
 import { getProvider } from "../whatsapp";
-import { INTERACTIVE_LIMITS } from "../whatsapp/types";
+import { fit } from "../whatsapp/fit";
+import { INTERACTIVE_LIMITS, TEXT_LIMITS } from "../whatsapp/types";
 import { readContactField, writeContactField } from "./contact-fields";
 import { checkOutboundUrl, renderUrl } from "./outbound-url";
 import {
@@ -732,6 +733,32 @@ async function sendTemplateStep(
   return { kind: "continue" };
 }
 
+/**
+ * Fills in a template and trims the result to what the message type allows.
+ *
+ * Logged whenever it bites: a shortened message is not worth ending a
+ * conversation over, but it is worth someone knowing the wording no longer
+ * fits once a real answer is substituted into it.
+ */
+function renderFitted(
+  template: string,
+  variables: Record<string, unknown>,
+  limit: number,
+  field: string,
+  sessionId: string,
+): string {
+  const result = fit(render(template, variables), limit);
+
+  if (result.truncated) {
+    log.warn(
+      { sessionId, field, limit },
+      "Message was longer than WhatsApp allows once variables were filled in, so it was shortened",
+    );
+  }
+
+  return result.text;
+}
+
 async function sendConversationalStep(
   session: SessionWithStep,
   step: JourneyStep,
@@ -760,7 +787,17 @@ async function sendConversationalStep(
       to: contact.phoneE164,
       type: config.type,
       link: render(config.link, variables),
-      ...(config.caption ? { caption: render(config.caption, variables) } : {}),
+      ...(config.caption
+        ? {
+            caption: renderFitted(
+              config.caption,
+              variables,
+              INTERACTIVE_LIMITS.MAX_BODY,
+              "caption",
+              session.id,
+            ),
+          }
+        : {}),
       ...(config.filename ? { filename: config.filename } : {}),
     });
 
@@ -774,7 +811,13 @@ async function sendConversationalStep(
 
   if (step.type === "ASK_QUESTION") {
     const config = readAskQuestion(step.config);
-    const body = render(config.body, variables);
+    const body = renderFitted(
+      config.body,
+      variables,
+      TEXT_LIMITS.MAX_BODY,
+      "body",
+      session.id,
+    );
 
     const result = await provider.sendTextMessage({
       to: contact.phoneE164,
@@ -790,8 +833,18 @@ async function sendConversationalStep(
   }
 
   const config = readSendMessage(step.config);
-  const body = render(config.body, variables);
   const options = config.options ?? [];
+
+  // The ceiling depends on what this step turns into: a bare statement goes as
+  // text and gets 4096 characters, whereas offering even one option makes it an
+  // interactive message and drops the allowance to 1024.
+  const body = renderFitted(
+    config.body,
+    variables,
+    options.length === 0 ? TEXT_LIMITS.MAX_BODY : INTERACTIVE_LIMITS.MAX_BODY,
+    "body",
+    session.id,
+  );
 
   // No choice offered: a statement, so the journey carries on.
   if (options.length === 0) {
@@ -813,8 +866,20 @@ async function sendConversationalStep(
           to: contact.phoneE164,
           body,
           buttons: options.map((o) => ({ id: o.id, label: o.label })),
-          ...(config.header ? { header: render(config.header, variables) } : {}),
-          ...(config.footer ? { footer: config.footer } : {}),
+          ...(config.header
+            ? {
+                header: renderFitted(
+                  config.header,
+                  variables,
+                  INTERACTIVE_LIMITS.MAX_HEADER,
+                  "header",
+                  session.id,
+                ),
+              }
+            : {}),
+          ...(config.footer
+            ? { footer: fit(config.footer, INTERACTIVE_LIMITS.MAX_FOOTER).text }
+            : {}),
         })
       : await provider.sendListMessage({
           to: contact.phoneE164,
@@ -825,8 +890,20 @@ async function sendConversationalStep(
             label: o.label,
             ...(o.description ? { description: o.description } : {}),
           })),
-          ...(config.header ? { header: render(config.header, variables) } : {}),
-          ...(config.footer ? { footer: config.footer } : {}),
+          ...(config.header
+            ? {
+                header: renderFitted(
+                  config.header,
+                  variables,
+                  INTERACTIVE_LIMITS.MAX_HEADER,
+                  "header",
+                  session.id,
+                ),
+              }
+            : {}),
+          ...(config.footer
+            ? { footer: fit(config.footer, INTERACTIVE_LIMITS.MAX_FOOTER).text }
+            : {}),
         });
 
   if (result.accepted === false) throw new Error(result.error.userMessage);
