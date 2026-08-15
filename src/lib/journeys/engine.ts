@@ -99,6 +99,47 @@ function sendFailure(error: { userMessage: string; retryable: boolean }): Error 
     : new Error(error.userMessage);
 }
 
+/**
+ * Writes session state, but only while the session is still where this run
+ * left it.
+ *
+ * runFrom read the session, checked it was ACTIVE, then wrote unconditionally.
+ * A reply arriving in between could end the session — setting currentStepId to
+ * null — and this loop would then write WAITING_FOR_REPLY straight over it,
+ * leaving a session that is neither running nor finished: advanceSession
+ * answers "no_current_step", resumeDueSessions never sees it, and the trigger
+ * code reads it as "already partway through", which locks that contact out of
+ * EVERY keyword-triggered journey, permanently.
+ *
+ * That is reachable today because option ids are `option_N` per step, so they
+ * collide across steps and a stale tap on an older message drives the second
+ * advance.
+ *
+ * Returns false when someone else moved first, which means: stop, do not write
+ * anything else, and leave the newer state alone.
+ */
+async function writeIfUnchanged(
+  sessionId: string,
+  stepId: string,
+  // Unchecked, so currentStepId can be set directly. It is a relation FK, and
+  // Prisma keeps those out of the checked update-many input.
+  data: Prisma.JourneySessionUncheckedUpdateManyInput,
+): Promise<boolean> {
+  const result = await prisma.journeySession.updateMany({
+    where: { id: sessionId, status: "ACTIVE", currentStepId: stepId },
+    data,
+  });
+
+  if (result.count === 0) {
+    log.info(
+      { sessionId, stepId },
+      "Session moved on while this step was running — leaving the newer state alone",
+    );
+  }
+
+  return result.count === 1;
+}
+
 /** How many times one step may fail retryably before the session gives up. */
 const MAX_STEP_ATTEMPTS = 4;
 
@@ -423,7 +464,53 @@ export async function advanceSession(input: {
     return { moved: false, reason: "already_handled" };
   }
 
+  try {
+    return await applyAdvance(session, input);
+  } catch (error) {
+    // The claim must not outlive the work it was guarding.
+    //
+    // It is written first so a retried webhook cannot reply to the customer
+    // twice. But if anything after it threw, the row stayed — and the caller
+    // swallows the throw and marks the webhook PROCESSED, while a redelivery
+    // hits the unique key and returns "already handled". The record that
+    // exists to make a retry safe was the thing preventing it, and the
+    // customer's tap was lost with the session left waiting on a reply that
+    // had already arrived.
+    //
+    // Released here so the next delivery — Meta retries for up to seven days —
+    // or recoverUnprocessedEvents can try again.
+    await prisma.journeyEvent
+      .deleteMany({
+        where: { sessionId: session.id, externalId: input.externalId },
+      })
+      .catch(() => undefined);
+
+    log.error(
+      {
+        sessionId: session.id,
+        externalId: input.externalId,
+        err: error instanceof Error ? error.message : error,
+      },
+      "Advance failed after claiming the reply — claim released so it can be retried",
+    );
+
+    throw error;
+  }
+}
+
+async function applyAdvance(
+  session: SessionWithStep,
+  input: {
+    contactId: string;
+    externalId: string;
+    optionId?: string;
+    text?: string;
+  },
+): Promise<AdvanceResult> {
+  // Checked by the caller before the claim; repeated here so this function
+  // stands on its own rather than on an assertion.
   const step = session.currentStep;
+  if (!step) return { moved: false, reason: "no_current_step" };
 
   /* --- A question: keep the answer, then carry on ------------------------ */
 
@@ -631,13 +718,10 @@ export async function runFrom(sessionId: string): Promise<void> {
           // a wait, and wrong here, where it would skip the send and carry on
           // as though the customer had been messaged. retryingStepId is what
           // tells the sweep to run this step again instead.
-          await prisma.journeySession.update({
-            where: { id: sessionId },
-            data: {
-              status: "WAITING_UNTIL",
-              resumeAt,
-              retryingStepId: step.id,
-            },
+          await writeIfUnchanged(sessionId, step.id, {
+            status: "WAITING_UNTIL",
+            resumeAt,
+            retryingStepId: step.id,
           });
 
           log.warn(
@@ -668,17 +752,16 @@ export async function runFrom(sessionId: string): Promise<void> {
     }
 
     if (outcome.kind === "wait_for_reply") {
-      await prisma.journeySession.update({
-        where: { id: sessionId },
-        data: { status: "WAITING_FOR_REPLY" },
+      await writeIfUnchanged(sessionId, step.id, {
+        status: "WAITING_FOR_REPLY",
       });
       return;
     }
 
     if (outcome.kind === "wait_until") {
-      await prisma.journeySession.update({
-        where: { id: sessionId },
-        data: { status: "WAITING_UNTIL", resumeAt: outcome.resumeAt },
+      await writeIfUnchanged(sessionId, step.id, {
+        status: "WAITING_UNTIL",
+        resumeAt: outcome.resumeAt,
       });
       return;
     }
@@ -686,9 +769,8 @@ export async function runFrom(sessionId: string): Promise<void> {
     // Carry on. A step with options that reached here offers a choice, so it
     // waits; anything else follows its single arrow.
     if (stepWaitsForReply(step.type, options.length)) {
-      await prisma.journeySession.update({
-        where: { id: sessionId },
-        data: { status: "WAITING_FOR_REPLY" },
+      await writeIfUnchanged(sessionId, step.id, {
+        status: "WAITING_FOR_REPLY",
       });
       return;
     }
@@ -700,10 +782,12 @@ export async function runFrom(sessionId: string): Promise<void> {
       return;
     }
 
-    await prisma.journeySession.update({
-      where: { id: sessionId },
-      data: { currentStepId: next },
-    });
+    // Stops rather than looping on: if this did not win, a reply has already
+    // moved the session somewhere else and continuing would run a step from a
+    // conversation that no longer exists.
+    if (!(await writeIfUnchanged(sessionId, step.id, { currentStepId: next }))) {
+      return;
+    }
   }
 
   // Ran out of steps. Almost certainly a loop, and stopping is kinder to the
