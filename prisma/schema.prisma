@@ -385,6 +385,12 @@ model CampaignRecipient {
   /// Set when a send timed out after the request was written and we cannot
   /// know whether Meta accepted it. Never auto-retried.
   needsReconciliation Boolean         @default(false)
+  /// Earliest this recipient may be tried again, after a retryable failure.
+  ///
+  /// The alternative was sleeping the backoff inline, which held the whole
+  /// scheduler pass — journey waits and webhook recovery included — while one
+  /// campaign waited out its retries.
+  nextAttemptAt       DateTime?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -395,6 +401,7 @@ model CampaignRecipient {
 
   @@unique([campaignId, phoneE164])
   @@index([campaignId, status])
+  @@index([campaignId, status, nextAttemptAt])
   @@index([status])
   @@index([phoneE164])
   @@index([needsReconciliation])

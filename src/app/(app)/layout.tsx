@@ -3,6 +3,7 @@ import { NAV_ITEMS } from "@/lib/nav";
 import { can } from "@/lib/rbac";
 
 import { MobileNav } from "./_components/mobile-nav";
+import { SchedulerBanner } from "./_components/scheduler-banner";
 import { Sidebar } from "./_components/sidebar";
 import { TopBar } from "./_components/top-bar";
 
@@ -27,6 +28,7 @@ export default async function AppLayout({
       <div className="lg:pl-60">
         <TopBar user={user} />
         <main className="mx-auto max-w-[1400px] px-4 pt-6 pb-24 sm:px-6 lg:px-8 lg:pb-10">
+          <SchedulerBanner />
           {children}
         </main>
       </div>

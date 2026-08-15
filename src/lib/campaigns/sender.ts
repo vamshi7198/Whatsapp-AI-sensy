@@ -112,7 +112,13 @@ export async function sendCampaignBatch(
   }
 
   const recipients = await prisma.campaignRecipient.findMany({
-    where: { campaignId, status: "PENDING", attemptCount: { lt: MAX_ATTEMPTS } },
+    where: {
+      campaignId,
+      status: "PENDING",
+      attemptCount: { lt: MAX_ATTEMPTS },
+      // Null for anyone never tried; set only while a backoff is running.
+      OR: [{ nextAttemptAt: null }, { nextAttemptAt: { lte: new Date() } }],
+    },
     orderBy: { createdAt: "asc" },
     take: batchSize,
   });
@@ -162,7 +168,10 @@ export async function sendCampaignBatch(
 
     await prisma.campaignRecipient.update({
       where: { id: recipient.id },
-      data: { attemptCount: { increment: 1 } },
+      // Cleared as the attempt begins. Left set, a recipient who failed once
+      // and then succeeded would keep a stale due time on the row, which reads
+      // as "waiting to retry" to anyone looking at it later.
+      data: { attemptCount: { increment: 1 }, nextAttemptAt: null },
     });
 
     const sendResult = await provider.sendTemplateMessage({
@@ -227,9 +236,24 @@ export async function sendCampaignBatch(
       }
 
       if (error.retryable && recipient.attemptCount + 1 < MAX_ATTEMPTS) {
-        // Left PENDING so the next batch picks it up after the backoff.
+        // Left PENDING with a due time, rather than sleeping the backoff here.
+        //
+        // The sleep sat inside the loop over a batch of 50, inside the
+        // scheduler pass. At 5s/10s/20s/40s one batch of retrying recipients
+        // could hold that pass for half an hour, during which journey WAIT
+        // steps did not fire, stored webhooks were not recovered, and the
+        // heartbeat /api/health reads was not written — so the single signal
+        // that reveals a dead scheduler said "stalled" during an ordinary
+        // send, training whoever watches it to ignore the alarm that matters.
         result.retryable += 1;
-        await new Promise((r) => setTimeout(r, backoffMs(recipient.attemptCount + 1)));
+        await prisma.campaignRecipient.update({
+          where: { id: recipient.id },
+          data: {
+            nextAttemptAt: new Date(
+              Date.now() + backoffMs(recipient.attemptCount + 1),
+            ),
+          },
+        });
       } else {
         await recordFailure(campaignId, recipient, error);
         result.failed += 1;
