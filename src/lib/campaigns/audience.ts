@@ -239,3 +239,26 @@ export function validateVariableValue(value: string): string | null {
   if (/ {4,}/.test(value)) return "Contains four or more spaces in a row";
   return null;
 }
+
+/**
+ * The same rules, applied instead of reported.
+ *
+ * A campaign variable comes from a column an operator mapped, so refusing it
+ * and naming the problem is right — someone is looking at the screen and can
+ * fix the data. A journey variable arrives from a customer mid-conversation,
+ * where there is nobody to tell and the only alternative to cleaning it up is
+ * ending the conversation.
+ *
+ * Typing an address across two lines is the normal way to write one, so this
+ * fires on ordinary use rather than on anything unusual.
+ */
+export function sanitiseVariableValue(value: string): string {
+  const cleaned = value
+    .replace(/[\r\n\t]+/g, " ")
+    .replace(/ {4,}/g, "   ")
+    .trim();
+
+  return cleaned.length > MAX_VARIABLE_LENGTH
+    ? cleaned.slice(0, MAX_VARIABLE_LENGTH).trimEnd()
+    : cleaned;
+}

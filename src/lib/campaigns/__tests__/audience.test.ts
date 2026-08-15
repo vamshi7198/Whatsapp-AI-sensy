@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   MAX_VARIABLE_LENGTH,
   resolveVariables,
+  sanitiseVariableValue,
   validateVariableValue,
   type AudienceMember,
   type VariableMapping,
@@ -128,6 +129,66 @@ describe("validateVariableValue", () => {
       const error = validateVariableValue(value);
       expect(error).not.toBeNull();
       expect(error).not.toMatch(/regex|\\n|\\t|132\d\d\d/);
+    }
+  });
+});
+
+/**
+ * The journey counterpart: same rules, applied rather than reported.
+ *
+ * A campaign variable comes from a mapped column and an operator can fix it.
+ * A journey variable is whatever the customer just typed, with nobody watching
+ * — so the choice is between tidying the value and ending the conversation.
+ */
+describe("sanitiseVariableValue", () => {
+  it("leaves an ordinary value untouched", () => {
+    expect(sanitiseVariableValue("Vamshi")).toBe("Vamshi");
+    expect(sanitiseVariableValue("UNC-10432")).toBe("UNC-10432");
+  });
+
+  it("turns a two-line address into something Meta accepts", () => {
+    // The case that matters. Writing an address across lines is normal, and
+    // it used to fail the send and kill the session.
+    const typed = "Flat 4B, Sunrise Apartments\nSector 12, Hyderabad";
+
+    const result = sanitiseVariableValue(typed);
+
+    expect(validateVariableValue(result)).toBeNull();
+    expect(result).toBe("Flat 4B, Sunrise Apartments Sector 12, Hyderabad");
+  });
+
+  it("handles Windows line endings without leaving a double space", () => {
+    expect(sanitiseVariableValue("one\r\ntwo")).toBe("one two");
+  });
+
+  it("collapses tabs and long space runs", () => {
+    expect(sanitiseVariableValue("Name\tSurname")).toBe("Name Surname");
+    expect(sanitiseVariableValue("A      B")).toBe("A   B");
+  });
+
+  it("trims a value that is over the length limit", () => {
+    const result = sanitiseVariableValue("x".repeat(2000));
+
+    expect(result).toHaveLength(MAX_VARIABLE_LENGTH);
+    expect(validateVariableValue(result)).toBeNull();
+  });
+
+  it("produces something valid for every shape the validator rejects", () => {
+    // The two functions must agree: anything sanitise returns has to pass
+    // validate, or the journey path is still sending things Meta refuses.
+    const hostile = [
+      "a\nb",
+      "a\r\nb",
+      "a\tb",
+      "a    b",
+      "x".repeat(2000),
+      "line\none\ttwo    three" + "y".repeat(2000),
+      "\n\n\n",
+      "  \t  ",
+    ];
+
+    for (const value of hostile) {
+      expect(validateVariableValue(sanitiseVariableValue(value))).toBeNull();
     }
   });
 });

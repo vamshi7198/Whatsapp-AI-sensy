@@ -1,5 +1,6 @@
 import type { JourneySession, JourneyStep, Prisma } from "@prisma/client";
 
+import { sanitiseVariableValue } from "../campaigns/audience";
 import { prisma } from "../db";
 import { getServiceWindow } from "../inbox/service";
 import { maskPhone, moduleLogger } from "../logger";
@@ -709,10 +710,18 @@ async function sendTemplateStep(
   const provider = await getProvider();
   if (!provider) throw new Error("WhatsApp is not connected.");
 
+  // Cleaned, not checked. Meta refuses a template parameter containing a line
+  // break, a tab, or four consecutive spaces, and a journey fills these in from
+  // whatever the customer typed — an address written across two lines is the
+  // normal way to write one. Campaigns validate the equivalent and report it,
+  // because an operator is there to fix the column; here there is nobody to
+  // tell, and the alternative to tidying the value is ending the conversation.
   const variables = Object.fromEntries(
     Object.entries(config.variables ?? {}).map(([k, v]) => [
       k,
-      render(v, { ...context, name: contact.name, email: contact.email }),
+      sanitiseVariableValue(
+        render(v, { ...context, name: contact.name, email: contact.email }),
+      ),
     ]),
   );
 
