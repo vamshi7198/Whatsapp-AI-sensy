@@ -18,6 +18,10 @@ param(
     [string]$NpmPath  = "C:\Program Files\nodejs\npm.cmd",
     [string]$TaskName = "UncannedWhatsApp",
     [string]$HealthUrl = "http://localhost:3000/login",
+    # The app is stopped while this runs, so a build that never returns is an
+    # outage rather than a slow deploy. A healthy build takes about two
+    # minutes; ten is generous and still bounded.
+    [int]$BuildTimeoutSeconds = 600,
     [switch]$SkipBuild
 )
 
@@ -45,8 +49,56 @@ if (-not $SkipBuild) {
     Stop-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
     Start-Sleep -Seconds 3
 
-    & $NpmPath run build
-    if ($LASTEXITCODE -ne 0) {
+    # Nothing may still be holding .next open. A worker left behind by a
+    # previous run keeps a lock on Windows, and the build then blocks writing
+    # over it rather than failing.
+    Get-Process node -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+    Start-Sleep -Seconds 2
+
+    # Build output cleared, cache kept.
+    #
+    # A build once hung for ten minutes at "Collecting page data" against an
+    # existing .next, and the same build finished in under two against a clean
+    # one. That is suggestive rather than proof, but a stale build directory
+    # buys nothing: .next/cache is what makes a rebuild fast, and it survives.
+    if (Test-Path ".next") {
+        Get-ChildItem ".next" -Force |
+            Where-Object { $_.Name -ne "cache" } |
+            Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+    # Run with a deadline.
+    #
+    # The app is ALREADY STOPPED at this point, so a build that never returns
+    # is not a slow deploy — it is an outage that lasts until somebody notices
+    # and intervenes. A plain `npm run build` gives no way out of that. As a
+    # job it can be given up on, and the previous version put back.
+    $build = Start-Job -ScriptBlock {
+        param($root, $npm)
+        Set-Location $root
+        & $npm run build 2>&1
+        $LASTEXITCODE
+    } -ArgumentList (Get-Location).Path, $NpmPath
+
+    if (-not (Wait-Job $build -Timeout $BuildTimeoutSeconds)) {
+        Write-Host ""
+        Write-Host "The build has not finished after $BuildTimeoutSeconds seconds." -ForegroundColor Red
+        Write-Host "Giving up on it and putting the previous version back." -ForegroundColor Yellow
+
+        Stop-Job $build -ErrorAction SilentlyContinue
+        Remove-Job $build -Force -ErrorAction SilentlyContinue
+        Get-Process node -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+
+        Start-ScheduledTask -TaskName $TaskName
+        Write-Error "Build timed out. The site is running the previous version - nothing was deployed."
+        exit 1
+    }
+
+    Receive-Job $build | ForEach-Object { Write-Host $_ }
+    $buildFailed = ($build.State -eq "Failed")
+    Remove-Job $build -Force -ErrorAction SilentlyContinue
+
+    if ($buildFailed) {
         Write-Host "Build failed - restarting the previous version..." -ForegroundColor Yellow
         Start-ScheduledTask -TaskName $TaskName
         Write-Error "Build failed."

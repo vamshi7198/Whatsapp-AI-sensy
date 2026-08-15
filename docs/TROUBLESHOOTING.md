@@ -35,6 +35,38 @@ app is back.
 
 ---
 
+## The deploy is stuck, and the site is down while it sits there
+
+`update.ps1` shows **"Collecting page data using 7 workers ..."** and stays
+there, and `whatsapp.uncanned.in` does not answer.
+
+This one is worth knowing because the symptom is alarming and the cause is
+dull. `update.ps1` stops the app *before* building — deliberately, since
+replacing the build under a live process is what produces an unstyled site —
+so while a build hangs, the site is down. It is not broken. It is waiting.
+
+The script now gives the build **ten minutes** and puts the previous version
+back if it overruns, so this should resolve itself. If you are watching it and
+do not want to wait:
+
+```powershell
+# In a NEW elevated PowerShell — the build is elevated, so an ordinary
+# window cannot stop it.
+Get-Process node | Stop-Process -Force
+Remove-Item C:\dev\uncanned-whatsapp\.next -Recurse -Force -Exclude cache
+powershell -File C:\dev\uncanned-whatsapp\deploy\update.ps1
+```
+
+Clearing `.next` matters: a build hung for ten minutes against an existing one
+and the same build finished in under two against a clean one. `update.ps1`
+clears it before every build now for that reason, keeping `.next\cache` so
+rebuilds stay fast.
+
+**Nothing is lost while this is happening.** Messages sent to the number are
+redelivered by Meta for up to 7 days, and the database is untouched by a build.
+
+---
+
 ## The site loads but looks broken — no styling, plain HTML
 
 Someone ran `npm run build` against the running app. The build replaces the
