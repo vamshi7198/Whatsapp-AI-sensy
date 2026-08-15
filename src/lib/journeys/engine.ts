@@ -1,4 +1,9 @@
-import type { JourneySession, JourneyStep, Prisma } from "@prisma/client";
+import { Prisma } from "@prisma/client";
+import type {
+  JourneySession,
+  JourneySessionStatus,
+  JourneyStep,
+} from "@prisma/client";
 
 import { sanitiseVariableValue } from "../campaigns/audience";
 import { prisma } from "../db";
@@ -50,6 +55,24 @@ const log = moduleLogger("journeys");
  * such a journey from sending a customer a hundred messages.
  */
 const MAX_STEPS_PER_RUN = 25;
+
+/**
+ * The statuses that mean a session is still going, and so block a new one.
+ *
+ * Must stay identical to the predicate on the partial unique index in
+ * migrations/20260815124500_journey_reentry. If the two drift, the database
+ * and the application disagree about whether a contact may re-enter, and the
+ * symptom is a P2002 surfacing as an unexplained failure.
+ *
+ * HANDED_OFF belongs here: a human has taken that conversation over, and
+ * starting the automation again would have the bot talking across them.
+ */
+const IN_FLIGHT: JourneySessionStatus[] = [
+  "ACTIVE",
+  "WAITING_FOR_REPLY",
+  "WAITING_UNTIL",
+  "HANDED_OFF",
+];
 
 export interface AdvanceResult {
   moved: boolean;
@@ -135,11 +158,29 @@ export async function startJourney(input: {
     });
 
     sessionId = session.id;
-  } catch {
-    // The unique constraint on (journeyId, contactId) did its job.
+  } catch (error) {
+    // Narrowed to the duplicate-key case. A bare catch reported a database
+    // outage, a validation fault and a genuine duplicate identically, so the
+    // one message an operator saw for any failure was a confident claim about
+    // the contact that was usually untrue.
+    if (
+      error instanceof Prisma.PrismaClientKnownRequestError &&
+      error.code === "P2002"
+    ) {
+      return {
+        ok: false,
+        error: "This contact is already partway through this journey.",
+      };
+    }
+
+    log.error(
+      { journeyId: input.journeyId, err: error instanceof Error ? error.message : error },
+      "Could not start journey session",
+    );
+
     return {
       ok: false,
-      error: "This contact is already partway through this journey.",
+      error: "Could not start this journey. Please try again.",
     };
   }
 
@@ -207,8 +248,12 @@ export async function startJourneyForContacts(input: {
   }
 
   for (const contactId of input.contactIds) {
+    // Only an in-flight session blocks a new one. Without the status filter
+    // this counted anyone who had ever been through the journey as alreadyIn
+    // and skipped them before startJourney was reached, so the partial unique
+    // index alone would not have fixed re-entry — this read gets there first.
     const existing = await prisma.journeySession.findFirst({
-      where: { journeyId: input.journeyId, contactId },
+      where: { journeyId: input.journeyId, contactId, status: { in: IN_FLIGHT } },
       select: { id: true },
     });
 

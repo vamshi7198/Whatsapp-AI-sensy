@@ -847,9 +847,18 @@ model JourneySession {
   runs        JourneyStepRun[]
   events      JourneyEvent[]
 
-  /// A contact can only be in a given journey once at a time. Entering twice
+  /// A contact can only be in a given journey once AT A TIME. Entering twice
   /// would have two conversations talking over each other.
-  @@unique([journeyId, contactId])
+  ///
+  /// Enforced by a partial unique index created in
+  /// migrations/20260815124500_journey_reentry, because Prisma cannot express
+  /// a WHERE predicate on an index. Declaring it @@unique here would be wrong:
+  /// that is what it used to be, and an unconditional unique key means "once
+  /// ever" -- a contact who completed a journey, or whose session ended FAILED
+  /// after a transient error, could never enter it again.
+  ///
+  /// Do not add @@unique back. The index below is only for lookups.
+  @@index([journeyId, contactId])
   @@index([status])
   @@index([status, resumeAt])
   @@index([contactId])
