@@ -6,6 +6,33 @@ import type { TemplateComponent } from "../whatsapp/types";
 
 const log = moduleLogger("templates");
 
+/**
+ * Which local templates a sync should mark DISABLED.
+ *
+ * `seen` holds "name::language" for everything Meta just returned; anything
+ * local and missing from it has been deleted at Meta.
+ *
+ * The empty case is the one that matters. "Meta really has no templates" and
+ * "the answer was empty for a reason we cannot see" are indistinguishable from
+ * here — an edge-cached empty body, a Graph field rename, a wabaId repointed at
+ * another WABA — and they arrive as a perfectly ordinary 200. Acting on the
+ * first reading meant a single updateMany marking EVERY template DISABLED,
+ * which fails the running campaign, throws in every journey template step and
+ * breaks auto-replies.
+ *
+ * Declining to act costs nothing in the genuine case: a WABA with no templates
+ * has no campaigns to run either. So an empty sync changes nothing.
+ */
+export function templatesToDisable<
+  T extends { id: string; name: string; language: string },
+>(seen: Set<string>, local: T[]): string[] {
+  if (seen.size === 0) return [];
+
+  return local
+    .filter((t) => !seen.has(`${t.name}::${t.language}`))
+    .map((t) => t.id);
+}
+
 export interface SyncResult {
   ok: boolean;
   created: number;
@@ -105,9 +132,14 @@ export async function syncTemplates(): Promise<SyncResult> {
       select: { id: true, name: true, language: true },
     });
 
-    const disabledIds = stale
-      .filter((t) => !seen.has(`${t.name}::${t.language}`))
-      .map((t) => t.id);
+    const disabledIds = templatesToDisable(seen, stale);
+
+    if (seen.size === 0 && stale.length > 0) {
+      log.warn(
+        { wouldHaveDisabled: stale.length },
+        "Template sync returned nothing while templates exist locally — leaving them alone",
+      );
+    }
 
     if (disabledIds.length) {
       await prisma.template.updateMany({

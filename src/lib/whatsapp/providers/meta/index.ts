@@ -386,8 +386,20 @@ export class MetaCloudProvider implements WhatsAppProvider {
       throw new Error(result.error.userMessage);
     }
 
+    // A missing `data` key is not an empty list. An edge-cached empty body, a
+    // Graph field rename or a wabaId pointing at the wrong WABA all arrive as
+    // a perfectly valid 200, and `?? []` turned every one of them into "this
+    // account has no templates" — which the caller then acts on by disabling
+    // all of them. An empty ARRAY is still honoured; it is only the absent key
+    // that is treated as a broken answer.
+    if (!Array.isArray(result.data.data)) {
+      throw new Error(
+        "WhatsApp's template list came back in an unexpected shape. Nothing has been changed — try again in a few minutes.",
+      );
+    }
+
     return {
-      items: (result.data.data ?? []).map(toProviderTemplate),
+      items: result.data.data.map(toProviderTemplate),
       nextCursor: result.data.paging?.next
         ? result.data.paging.cursors?.after
         : undefined,

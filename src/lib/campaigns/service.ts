@@ -16,6 +16,18 @@ import {
 const log = moduleLogger("campaigns");
 
 /**
+ * Has this campaign stopped sending of its own accord?
+ *
+ * Anything else — DRAFT, SCHEDULED, QUEUED, RUNNING — may still send, so a
+ * PENDING recipient there means "not yet" rather than "never reached".
+ */
+export function isStopped(status: string): boolean {
+  return ["COMPLETED", "PARTIALLY_FAILED", "FAILED", "CANCELLED"].includes(
+    status,
+  );
+}
+
+/**
  * Campaign creation and expansion.
  *
  * The expensive part — turning an audience into one frozen row per recipient —
@@ -276,13 +288,30 @@ export async function getRetryPreview(campaignId: string): Promise<RetryPreview>
 
   if (!campaign) return { ...empty, blockedReason: "Campaign not found." };
 
-  const [failed, previousRetries] = await Promise.all([
+  const [failed, neverAttempted, previousRetries] = await Promise.all([
     prisma.campaignRecipient.findMany({
       where: { campaignId, status: "FAILED" },
       select: {
         message: { select: { errorCode: true, errorUserMessage: true } },
       },
     }),
+    // Recipients a halt never got to.
+    //
+    // All four stop paths in sender.ts — cancelled, WhatsApp not configured,
+    // template no longer approved, auth error — set the campaign's status and
+    // return without touching recipients, so everyone not yet reached stays
+    // PENDING rather than FAILED. Counting only FAILED meant those people were
+    // invisible here and the screen said "Nothing failed in this campaign, so
+    // there is nothing to resend" about a campaign that had messaged half its
+    // audience. There was no path left in the app to reach the other half.
+    //
+    // Only counted once the campaign has stopped: PENDING on a live campaign
+    // just means "not yet".
+    isStopped(campaign.status)
+      ? prisma.campaignRecipient.count({
+          where: { campaignId, status: "PENDING" },
+        })
+      : Promise.resolve(0),
     prisma.campaign.count({ where: { retryOfCampaignId: campaignId } }),
   ]);
 
@@ -306,17 +335,26 @@ export async function getRetryPreview(campaignId: string): Promise<RetryPreview>
     else groups.set(reason, { reason, count: 1, permanent });
   }
 
+  if (neverAttempted > 0) {
+    groups.set("never-attempted", {
+      reason:
+        "Sending stopped before these people were reached, so nothing was tried for them.",
+      count: neverAttempted,
+      permanent: false,
+    });
+  }
+
   let blockedReason: string | undefined;
 
   if (["QUEUED", "RUNNING", "SCHEDULED"].includes(campaign.status)) {
     blockedReason =
       "This campaign is still sending. Wait until it finishes, so the list of failures is final.";
-  } else if (failed.length === 0) {
+  } else if (failed.length + neverAttempted === 0) {
     blockedReason = "Nothing failed in this campaign, so there is nothing to resend.";
   }
 
   return {
-    failedCount: failed.length,
+    failedCount: failed.length + neverAttempted,
     permanentCount,
     reasons: [...groups.values()].sort((a, b) => b.count - a.count),
     previousRetries,
@@ -331,7 +369,12 @@ export async function getRetryPreview(campaignId: string): Promise<RetryPreview>
  * report is a record of what happened and rewriting it would destroy the
  * history of what was spent and delivered.
  *
- * Only FAILED recipients are copied. That deliberately excludes:
+ * FAILED recipients are copied, and so are PENDING ones once the campaign has
+ * stopped: every halt in sender.ts returns without touching recipients, so
+ * anyone sending never reached is left PENDING rather than FAILED. Excluding
+ * them left no way to reach the rest of an audience after a halt.
+ *
+ * Still deliberately excluded:
  *  - SENT recipients, including the ones flagged needsReconciliation, where a
  *    message may already have reached the customer.
  *  - SKIPPED recipients, who were excluded on purpose — opted out, no opt-in,
@@ -390,7 +433,11 @@ export async function createRetryCampaign(
   const failed = await prisma.campaignRecipient.findMany({
     where: {
       campaignId,
-      status: "FAILED",
+      // PENDING is included because the campaign has stopped — checked above,
+      // where anything still QUEUED, RUNNING or SCHEDULED is refused. On a
+      // stopped campaign PENDING means sending never got this far, which is
+      // exactly the person a resend exists to reach.
+      status: { in: ["FAILED", "PENDING"] },
       // Belt and braces. A timed-out send is recorded as SENT, so it should
       // never appear here — but a duplicate message to a real customer is bad
       // enough to be worth guarding twice.
