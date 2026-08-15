@@ -80,11 +80,17 @@ export class MetaCloudProvider implements WhatsAppProvider {
       const externalMessageId = result.data.messages?.[0]?.id;
 
       if (!externalMessageId) {
-        // A 200 with no message ID should not happen; treating it as accepted
-        // would leave a message we can never match a status webhook to.
+        // A 200 with no message id should not happen, and it is "unknown"
+        // rather than failed.
+        //
+        // Meta said yes. We cannot match a status webhook to it, which is a
+        // real problem, but recording it as FAILED was worse: the recipient
+        // was then copied into a resend campaign and messaged a second time,
+        // duplicating something Meta had most likely delivered. Unknown keeps
+        // it out of the resend and flags it for a human instead.
         log.error({ data: result.data }, "Meta accepted a send but returned no message id");
         return {
-          accepted: false,
+          accepted: "unknown",
           error: {
             code: "no_message_id",
             retryable: false,

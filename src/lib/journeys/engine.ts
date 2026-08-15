@@ -1229,6 +1229,17 @@ async function recordSentMessage(
       payload: { journeySessionId: session.id, stepId: step.id } as Prisma.InputJsonValue,
       status: "SENT",
       sentAt: now,
+      // A null wamid means Meta never confirmed this one — a reset connection,
+      // or a 200 we could not read. The campaign sender and the inbox both say
+      // so in exactly these words; a journey used to record it as a clean SENT,
+      // so nothing distinguished a delivered message from one that may never
+      // have gone out, and the session then waited for a reply to it.
+      ...(wamid
+        ? {}
+        : {
+            errorUserMessage:
+              "WhatsApp did not confirm this message. It may or may not have been delivered.",
+          }),
     },
   });
 

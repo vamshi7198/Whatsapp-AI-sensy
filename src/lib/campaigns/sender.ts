@@ -133,6 +133,28 @@ export async function sendCampaignBatch(
   const delayMs = Math.max(1, Math.floor(1000 / env.SEND_RATE_LIMIT_MPS));
 
   for (const recipient of recipients) {
+    // Re-read every iteration, not once before the loop.
+    //
+    // The batch below was selected before Stop was pressed, and the loop
+    // walked all of it regardless — so up to 49 more customers were messaged
+    // after the operator decided the message was wrong, which is exactly the
+    // moment it matters most. One indexed lookup by primary key per recipient
+    // is a small price for the Stop button meaning what it says.
+    const live = await prisma.campaign.findUnique({
+      where: { id: campaignId },
+      select: { status: true },
+    });
+
+    if (!live || live.status === "CANCELLED") {
+      result.paused = true;
+      result.pauseReason = "Campaign was cancelled";
+      log.info(
+        { campaignId, remaining: recipients.length - result.attempted },
+        "Campaign cancelled mid-batch — stopping",
+      );
+      break;
+    }
+
     result.attempted += 1;
 
     // Compliance is re-checked here, not only at expansion. A customer who

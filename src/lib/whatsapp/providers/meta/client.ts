@@ -2,6 +2,7 @@ import type { MetaConfig } from "@/lib/settings";
 import { moduleLogger } from "@/lib/logger";
 
 import { classifyError, LOCAL_ERRORS } from "../../errors";
+import { isPreConnectFailure } from "./network";
 import type { NormalisedError } from "../../types";
 
 const log = moduleLogger("meta-client");
@@ -90,6 +91,18 @@ export class MetaClient {
           { path, status: response.status, durationMs },
           "Meta returned a non-JSON response",
         );
+
+        // A 2xx we cannot read is ambiguous, not a failure.
+        //
+        // Meta answered with success and we simply could not parse it — a
+        // captive-portal interstitial served with status 200 is entirely
+        // plausible on home broadband. Recording that as FAILED meant the
+        // recipient was then copied into a resend campaign and messaged
+        // again, duplicating a message that had very likely been delivered.
+        if (response.ok && method === "POST") {
+          return { ok: "unknown", error: { ...LOCAL_ERRORS.NETWORK } };
+        }
+
         return {
           ok: false,
           error: classifyError(
@@ -144,6 +157,23 @@ export class MetaClient {
       // been accepted. GETs are safe to treat as plain failures.
       if (isAbort && method === "POST") {
         return { ok: "unknown", error: { ...LOCAL_ERRORS.TIMEOUT } };
+      }
+
+      // So is a connection that died after the request went out.
+      //
+      // Only the timeout used to be treated as ambiguous. A socket reset
+      // surfaces from fetch as a TypeError carrying cause.code ECONNRESET, so
+      // it fell through to a plain retryable failure and the message was sent
+      // again — up to five times, with no idempotency key reaching Meta,
+      // because SendTemplateInput.idempotencyKey is declared but never set or
+      // read. Meta may well have accepted the first one.
+      //
+      // Not every network error though: if the connection was never
+      // established, nothing was sent and retrying is exactly right. Calling
+      // those ambiguous would strand recipients as phantom sends over an
+      // ordinary DNS blip.
+      if (method === "POST" && !isPreConnectFailure(error)) {
+        return { ok: "unknown", error: { ...LOCAL_ERRORS.NETWORK } };
       }
 
       return {
