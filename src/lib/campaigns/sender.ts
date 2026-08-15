@@ -3,6 +3,7 @@ import type { Prisma } from "@prisma/client";
 import { prisma } from "../db";
 import { env } from "../env";
 import { maskPhone, moduleLogger } from "../logger";
+import { getTemplateBody, renderTemplateBody } from "../templates/service";
 import { getProvider } from "../whatsapp";
 import { LOCAL_ERRORS } from "../whatsapp/errors";
 
@@ -86,13 +87,19 @@ export async function sendCampaignBatch(
     return result;
   }
 
+  // The wording as approved, kept so each sent message can record the text the
+  // customer actually received rather than the word "(template)".
+  let templateBody = "";
+
   // Third and final approval check, immediately before sending. Meta can pause
   // a template mid-campaign, and this is the check that catches it.
   if (campaign.templateId) {
     const template = await prisma.template.findUnique({
       where: { id: campaign.templateId },
-      select: { status: true },
+      select: { status: true, components: true },
     });
+
+    templateBody = getTemplateBody(template?.components);
 
     if (template && template.status !== "APPROVED") {
       await prisma.campaign.update({
@@ -240,12 +247,24 @@ export async function sendCampaignBatch(
         : {}),
     });
 
+    // What this person actually received, for their conversation thread. The
+    // same substitution the preview uses, so the thread shows what the
+    // operator was shown before sending.
+    const sentBody = templateBody
+      ? renderTemplateBody(
+          templateBody,
+          recipient.variables as Record<string, string>,
+        )
+      : undefined;
+
     if (sendResult.accepted === true) {
       await recordAccepted(
         campaignId,
         recipient.id,
         recipient.contactId,
         sendResult.externalMessageId,
+        false,
+        sentBody,
       );
       result.sent += 1;
     } else if (sendResult.accepted === "unknown") {
@@ -258,6 +277,7 @@ export async function sendCampaignBatch(
         recipient.contactId,
         null,
         true,
+        sentBody,
       );
       result.sent += 1;
       log.warn(
@@ -343,8 +363,38 @@ async function recordAccepted(
   contactId: string | null,
   wamid: string | null,
   needsReconciliation = false,
+  /** The text the customer actually received, for the inbox thread. */
+  body?: string,
 ): Promise<void> {
   const now = new Date();
+
+  // The conversation this belongs to, so the message appears in the thread.
+  //
+  // Campaign messages were written with conversationId NULL, and the inbox
+  // thread reads by conversation — so a campaign the customer received was
+  // simply absent from their conversation, and an agent opening it saw a gap
+  // where the message they are replying about should be.
+  //
+  // Upserted rather than looked up: a campaign is often the FIRST thing ever
+  // sent to someone, so the conversation may not exist yet. lastMessageAt and
+  // lastOutboundAt are set, but deliberately not the service window — that is
+  // opened by the customer writing to us, never by us writing to them.
+  const conversationId = contactId
+    ? (
+        await prisma.conversation.upsert({
+          where: { contactId },
+          update: { lastMessageAt: now, lastOutboundAt: now },
+          create: {
+            contactId,
+            status: "OPEN",
+            lastMessageAt: now,
+            lastOutboundAt: now,
+            unreadCount: 0,
+          },
+          select: { id: true },
+        })
+      ).id
+    : undefined;
 
   await prisma.$transaction([
     prisma.campaignRecipient.update({
@@ -362,8 +412,15 @@ async function recordAccepted(
               wamid,
               direction: "OUTBOUND",
               contactId,
+              conversationId,
               campaignRecipientId: recipientId,
               type: "template",
+              // The filled-in text, not an empty object. Without it the thread
+              // rendered "(template)" — so even once the conversation link was
+              // fixed, the agent could see that something was sent but not
+              // what, which is the part they need when the customer replies
+              // "yes please" to a message nobody can read.
+              body,
               payload: {} as Prisma.InputJsonValue,
               status: "SENT",
               sentAt: now,

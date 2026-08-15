@@ -12,6 +12,7 @@ import type {
   BusinessProfile,
   CreateTemplateInput,
   MediaUploadResult,
+  NormalisedError,
   NormalisedWebhookEvent,
   Paginated,
   PhoneNumberProfile,
@@ -443,6 +444,52 @@ export class MetaCloudProvider implements WhatsAppProvider {
   /* ---------------------------------------------------------------- */
   /* Account                                                           */
   /* ---------------------------------------------------------------- */
+
+  /**
+   * The same call as getPhoneNumber, but says WHY it failed.
+   *
+   * getPhoneNumber returns null for everything, which is fine where the answer
+   * is only used to show a profile — but the Settings page turned that single
+   * null into "WhatsApp rejected these details. Check the Phone Number ID and
+   * that the access token is a System User token that has not expired."
+   *
+   * During a Meta outage, or with the broadband down, the owner was told with
+   * confidence that their credentials were wrong. The natural response is to
+   * regenerate a System User token that was working perfectly, on a live
+   * production number, in the middle of an incident. The error catalogue
+   * already produces the right sentence for a timeout or a 5xx; this is what
+   * lets the page use it.
+   */
+  async testConnection(): Promise<
+    | { ok: true; phone: PhoneNumberProfile }
+    | { ok: false; error: NormalisedError }
+  > {
+    const result = await this.client.request<{
+      id?: string;
+      display_phone_number?: string;
+      verified_name?: string;
+      quality_rating?: string;
+      messaging_limit_tier?: string;
+    }>(this.config.phoneNumberId, {
+      query: {
+        fields:
+          "id,display_phone_number,verified_name,quality_rating,messaging_limit_tier",
+      },
+    });
+
+    if (result.ok !== true) return { ok: false, error: result.error };
+
+    return {
+      ok: true,
+      phone: {
+        id: result.data.id ?? this.config.phoneNumberId,
+        displayPhoneNumber: result.data.display_phone_number ?? "",
+        verifiedName: result.data.verified_name ?? "",
+        qualityRating: result.data.quality_rating,
+        messagingLimitTier: result.data.messaging_limit_tier,
+      },
+    };
+  }
 
   async getPhoneNumber(): Promise<PhoneNumberProfile | null> {
     const result = await this.client.request<{

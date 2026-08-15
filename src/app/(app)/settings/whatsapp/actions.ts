@@ -125,25 +125,35 @@ export async function testConnection(): Promise<WhatsAppSettingsState> {
 
     const provider = new MetaCloudProvider(config, env.META_APP_SECRET);
 
-    const [phone, account] = await Promise.all([
-      provider.getPhoneNumber(),
+    const [test, account] = await Promise.all([
+      provider.testConnection(),
       provider.getBusinessAccount(),
     ]);
 
-    if (!phone) {
+    if (!test.ok) {
       await setSetting(
         SETTING_KEYS.LAST_CONNECTION_ERROR,
         new Date().toISOString(),
       );
 
+      // Meta's own reason, not a guess.
+      //
+      // This used to print "WhatsApp rejected these details" for every
+      // failure, so a Meta outage or a dropped connection told the owner their
+      // credentials were wrong — and the natural response is to regenerate a
+      // working System User token on a live production number, mid-incident.
+      // The catalogue already words a timeout or a 5xx correctly.
       return {
         connection: {
           ok: false,
-          message:
-            "WhatsApp rejected these details. Check the Phone Number ID and that the access token is a System User token that has not expired.",
+          message: test.error.suggestedAction
+            ? `${test.error.userMessage} ${test.error.suggestedAction}`
+            : test.error.userMessage,
         },
       };
     }
+
+    const phone = test.phone;
 
     // Cache what Meta told us, so the dashboard can warn about a falling
     // quality rating without calling Meta on every page load.

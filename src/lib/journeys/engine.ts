@@ -1302,12 +1302,35 @@ async function recordSentMessage(
 ): Promise<void> {
   const now = new Date();
 
+  // Upserted, not just read.
+  //
+  // The caller passes contact.conversation?.id, which is undefined for anyone
+  // who has never written in — and a journey started from a tag or an audience
+  // reaches exactly those people first. Their messages were written with no
+  // conversation, so the inbox thread simply did not contain them.
+  const threadId = conversationId
+    ? conversationId
+    : (
+        await prisma.conversation.upsert({
+          where: { contactId: session.contactId },
+          update: { lastMessageAt: now, lastOutboundAt: now },
+          create: {
+            contactId: session.contactId,
+            status: "OPEN",
+            lastMessageAt: now,
+            lastOutboundAt: now,
+            unreadCount: 0,
+          },
+          select: { id: true },
+        })
+      ).id;
+
   await prisma.message.create({
     data: {
       wamid,
       direction: "OUTBOUND",
       contactId: session.contactId,
-      conversationId,
+      conversationId: threadId,
       type,
       body,
       payload: { journeySessionId: session.id, stepId: step.id } as Prisma.InputJsonValue,
@@ -1327,6 +1350,8 @@ async function recordSentMessage(
     },
   });
 
+  // Only when the conversation already existed — the upsert above has already
+  // set these on the ones it created.
   if (conversationId) {
     await prisma.conversation.update({
       where: { id: conversationId },
