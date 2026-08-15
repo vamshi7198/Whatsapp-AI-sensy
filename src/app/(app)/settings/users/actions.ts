@@ -12,6 +12,8 @@ import {
   validatePasswordStrength,
 } from "@/lib/auth/password";
 import { getCurrentUser, revokeAllSessions } from "@/lib/auth/session";
+import { Prisma } from "@prisma/client";
+
 import { prisma } from "@/lib/db";
 import { ForbiddenError } from "@/lib/rbac";
 
@@ -28,6 +30,59 @@ function toState(error: unknown): UserActionState {
     return { error: "You do not have permission to do that." };
   }
   return { error: "Something went wrong. Please try again." };
+}
+
+type GuardResult =
+  | { ok: true }
+  | { ok: false; reason: "last_admin" | "contended" };
+
+/**
+ * Applies a change, refusing it if it would leave nobody able to administer.
+ *
+ * `couldRemoveAdmin` says whether this particular change needs the check —
+ * promoting somebody or reactivating them never does.
+ *
+ * The point is that the count and the write happen in ONE Serializable
+ * transaction. As two separate statements the check proved nothing: two people
+ * demoting the last two administrators at the same moment both counted 2, both
+ * passed, and both wrote, leaving zero. Recovering from that needs shell access
+ * and scripts/set-admin.ts. The race also worked across the two different
+ * actions, so guarding each one alone would not have closed it — the invariant
+ * has to be re-asserted inside the transaction that writes.
+ */
+async function withLastAdminGuard(
+  couldRemoveAdmin: boolean,
+  write: (tx: Prisma.TransactionClient) => Promise<unknown>,
+): Promise<GuardResult> {
+  try {
+    return await prisma.$transaction(
+      async (tx): Promise<GuardResult> => {
+        if (couldRemoveAdmin) {
+          const admins = await tx.user.count({
+            where: { role: "ADMIN", isActive: true },
+          });
+
+          if (admins <= 1) return { ok: false, reason: "last_admin" };
+        }
+
+        await write(tx);
+        return { ok: true };
+      },
+      { isolationLevel: "Serializable" },
+    );
+  } catch (error) {
+    // Postgres aborted one of two conflicting transactions, which is the
+    // guard working. Reported as "try again" rather than as a failure,
+    // because on a retry the loser will correctly see only one admin left.
+    if (
+      error instanceof Prisma.PrismaClientKnownRequestError &&
+      error.code === "P2034"
+    ) {
+      return { ok: false, reason: "contended" };
+    }
+
+    throw error;
+  }
 }
 
 const inviteSchema = z.object({
@@ -117,22 +172,30 @@ export async function changeUserRole(
     if (!target) return { error: "That person no longer exists." };
 
     // Removing the last admin would lock everyone out of settings permanently.
-    if (target.role === "ADMIN" && role !== "ADMIN") {
-      const admins = await prisma.user.count({
-        where: { role: "ADMIN", isActive: true },
-      });
-      if (admins <= 1) {
-        return {
-          error:
-            "This is the only administrator. Make someone else an administrator first.",
-        };
-      }
-    }
+    //
+    // Counted and written inside one Serializable transaction. As two separate
+    // statements the check proved nothing: two people demoting the last two
+    // administrators at the same moment both counted 2, both passed, and both
+    // wrote — leaving zero, which can only be undone with shell access and
+    // scripts/set-admin.ts. The race also worked across this action and the
+    // deactivate one, so guarding each alone would not have been enough.
+    const demoted = await withLastAdminGuard(
+      target.role === "ADMIN" && role !== "ADMIN",
+      (tx) =>
+        tx.user.update({
+          where: { id },
+          data: { role: role as "ADMIN" | "MANAGER" | "AGENT" },
+        }),
+    );
 
-    await prisma.user.update({
-      where: { id },
-      data: { role: role as "ADMIN" | "MANAGER" | "AGENT" },
-    });
+    if (!demoted.ok) {
+      return {
+        error:
+          demoted.reason === "last_admin"
+            ? "This is the only administrator. Make someone else an administrator first."
+            : "Someone else was changing administrators at the same time. Try again.",
+      };
+    }
 
     // A role change must take effect immediately, not at next login.
     await revokeAllSessions(id);
@@ -168,23 +231,27 @@ export async function setUserActive(
       return { error: "You cannot deactivate your own account." };
     }
 
-    if (!activate && target.role === "ADMIN") {
-      const admins = await prisma.user.count({
-        where: { role: "ADMIN", isActive: true },
-      });
-      if (admins <= 1) {
-        return { error: "This is the only administrator and cannot be removed." };
-      }
-    }
+    const changed = await withLastAdminGuard(
+      !activate && target.role === "ADMIN",
+      (tx) =>
+        tx.user.update({
+          where: { id },
+          data: {
+            isActive: activate,
+            // Clear any lockout when reactivating.
+            ...(activate ? { failedLogins: 0, lockedUntil: null } : {}),
+          },
+        }),
+    );
 
-    await prisma.user.update({
-      where: { id },
-      data: {
-        isActive: activate,
-        // Clear any lockout when reactivating.
-        ...(activate ? { failedLogins: 0, lockedUntil: null } : {}),
-      },
-    });
+    if (!changed.ok) {
+      return {
+        error:
+          changed.reason === "last_admin"
+            ? "This is the only administrator and cannot be removed."
+            : "Someone else was changing administrators at the same time. Try again.",
+      };
+    }
 
     // Deactivation revokes every session immediately — this is the whole
     // reason for database sessions rather than JWTs.

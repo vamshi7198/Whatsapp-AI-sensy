@@ -176,6 +176,28 @@ export async function saveTriggersAction(
       return { error: "Add at least one word that should start this journey." };
     }
 
+    // Only a draft, exactly as saveGraph already insists for the steps.
+    //
+    // This had no status check at all, so a stale tab holding a versionId that
+    // has since been published could rewrite a LIVE journey's triggers — and
+    // switching one to ANY_MESSAGE enrols every inbound sender and fires the
+    // opening template at them, with no validation, no preview and no
+    // confirmation. Triggers decide who gets messaged, so they belong behind
+    // the same publish workflow as the steps they start.
+    const version = await prisma.journeyVersion.findUnique({
+      where: { id: versionId },
+      select: { status: true, journeyId: true },
+    });
+
+    if (!version) return { error: "That journey no longer exists." };
+
+    if (version.status !== "DRAFT") {
+      return {
+        error:
+          "This version is live and cannot be changed. Make a new version to edit it.",
+      };
+    }
+
     await prisma.$transaction(async (tx) => {
       await tx.journeyTrigger.deleteMany({ where: { versionId } });
 
@@ -201,8 +223,11 @@ export async function saveTriggersAction(
 
     await audit(user, "journey.triggers", {
       entityType: "Journey",
-      entityId: versionId,
-      metadata: { mode, keywords },
+      // The journey, not the version: entityType said "Journey" while the id
+      // was a version's, so the row pointed at nothing that could be looked
+      // up. The version is kept alongside, since it is what was edited.
+      entityId: version.journeyId,
+      metadata: { mode, keywords, versionId },
     });
 
     revalidatePath("/journeys");

@@ -385,6 +385,60 @@ export async function createTag(
   }
 }
 
+/**
+ * Where a tag is still referred to, in plain words.
+ *
+ * Journey steps and triggers keep tag ids inside JSON config, which no foreign
+ * key can watch, so this reads them out and looks. Automation actions do have a
+ * real column — but it is ON DELETE SET NULL, which silently disarms the action
+ * rather than preventing the delete, so it needs checking too.
+ */
+async function tagReferences(tagId: string): Promise<string[]> {
+  // Searched as text rather than by JSON path, because the id lives under a
+  // different key depending on the step: ADD_TAG and REMOVE_TAG keep it in
+  // `tagId`, a CONDITION on a tag keeps it in `key`. A fixed path would miss
+  // whichever one it was not written for, and a guard that silently finds
+  // nothing is worse than none — it reads as "safe to delete".
+  //
+  // Prisma's string_contains was the obvious choice and is wrong here: it
+  // matches JSON string VALUES, not the serialised document, so it found
+  // nothing at all. scripts/test-tag-references.ts is what caught that and is
+  // what will catch it again.
+  //
+  // Tag ids are cuids, so a false positive from a substring match is not a
+  // practical concern.
+  const like = `%${tagId}%`;
+
+  const [stepRows, triggerRows, actions] = await Promise.all([
+    prisma.$queryRaw<Array<{ count: number }>>`
+      SELECT count(*)::int AS count FROM "JourneyStep"
+       WHERE config::text LIKE ${like}
+    `,
+    prisma.$queryRaw<Array<{ count: number }>>`
+      SELECT count(*)::int AS count FROM "JourneyTrigger"
+       WHERE config::text LIKE ${like}
+    `,
+    prisma.automationAction.count({ where: { tagId } }),
+  ]);
+
+  const steps = stepRows[0]?.count ?? 0;
+  const triggers = triggerRows[0]?.count ?? 0;
+
+  const uses: string[] = [];
+
+  if (steps > 0) {
+    uses.push(`${steps} journey step${steps === 1 ? "" : "s"}`);
+  }
+  if (triggers > 0) {
+    uses.push(`${triggers} journey trigger${triggers === 1 ? "" : "s"}`);
+  }
+  if (actions > 0) {
+    uses.push(`${actions} automation action${actions === 1 ? "" : "s"}`);
+  }
+
+  return uses;
+}
+
 export async function deleteTag(
   _prev: ActionState,
   formData: FormData,
@@ -396,6 +450,26 @@ export async function deleteTag(
 
     const tag = await prisma.tag.findUnique({ where: { id } });
     if (!tag) return { error: "Tag not found." };
+
+    // Refused while anything still points at it.
+    //
+    // Journey and trigger configs hold tag ids inside JSON with no foreign
+    // key, so the database cannot protect this and deleting produced three
+    // different silent failures at once: an ADD_TAG step throws and ends the
+    // session; a CONDITION on the tag quietly returns nothing, so EVERYONE
+    // takes the "no" branch and the journey keeps running as though that were
+    // the answer; and an automation action has its tagId set to null, so it is
+    // skipped while the run still records COMPLETED.
+    //
+    // None of those announce themselves. Checking first is the only thing that
+    // does.
+    const uses = await tagReferences(id);
+
+    if (uses.length > 0) {
+      return {
+        error: `"${tag.name}" is still used by ${uses.join(" and ")}. Remove it there first, or leave the tag in place — an unused tag costs nothing.`,
+      };
+    }
 
     // Cascade removes the ContactTag rows; the contacts themselves are
     // untouched.
