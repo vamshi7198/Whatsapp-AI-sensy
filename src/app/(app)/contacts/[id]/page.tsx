@@ -4,7 +4,7 @@ import { notFound } from "next/navigation";
 import { Badge, OptInBadge } from "@/components/ui/badge";
 import { requireAuth } from "@/lib/auth/guards";
 import { formatPhoneForDisplay } from "@/lib/contacts/phone";
-import { getContact, listTags } from "@/lib/contacts/service";
+import { getContact, listTags, readCustomFields } from "@/lib/contacts/service";
 import { can } from "@/lib/rbac";
 
 import { EditContactButton } from "./_edit-contact";
@@ -41,6 +41,8 @@ export default async function ContactDetailPage({
 
   const [contact, tags] = await Promise.all([getContact(id), listTags()]);
   if (!contact) notFound();
+
+  const customFields = readCustomFields(contact.attributes);
 
   return (
     <div className="space-y-5">
@@ -156,6 +158,44 @@ export default async function ContactDetailPage({
               </div>
             )}
           </section>
+
+          {/*
+            Whatever the CSV happened to carry.
+
+            Deliberately driven by the data rather than a list of known fields:
+            a column added to next month's import — AWB number, delivery
+            partner, anything — appears here without a code change. Hard-coding
+            the names would mean the app needing an edit every time the
+            spreadsheet gains a column, which is the opposite of the point.
+
+            Sorted, so the same contact does not present its fields in a
+            different order each time it loads — Postgres gives no ordering
+            guarantee for JSON keys.
+          */}
+          {customFields.length > 0 && (
+            <section className="rounded-xl border border-slate-200 bg-white p-5 dark:border-slate-800 dark:bg-slate-900">
+              <h2 className="mb-3 text-sm font-semibold text-slate-900 dark:text-slate-50">
+                Other details
+              </h2>
+              <dl className="flex flex-col gap-2.5">
+                {customFields.map(([key, value]) => (
+                  <div key={key}>
+                    <dt className="text-xs text-slate-500 dark:text-slate-400">
+                      {key}
+                    </dt>
+                    {/*
+                      break-words, because an address or a tracking number can
+                      be long and unbroken, and it must wrap rather than push
+                      the column wider than the page.
+                    */}
+                    <dd className="text-sm break-words text-slate-900 dark:text-slate-100">
+                      {value}
+                    </dd>
+                  </div>
+                ))}
+              </dl>
+            </section>
+          )}
         </div>
 
         <section className="rounded-xl border border-slate-200 bg-white lg:col-span-2 dark:border-slate-800 dark:bg-slate-900">

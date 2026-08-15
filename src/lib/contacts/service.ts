@@ -183,3 +183,32 @@ export async function getContactCounts() {
 
   return { total, optedIn, optedOut, marketingEligible };
 }
+
+/**
+ * The extra fields a contact picked up from a CSV, ready to display.
+ *
+ * Contact.attributes is a JSON bag holding whatever columns an import carried
+ * that were not name, phone, email or tags — an address today, an AWB number
+ * and a delivery partner next month. Reading it here rather than naming known
+ * fields anywhere is the whole point: a new column appears in the app without
+ * the app being edited.
+ *
+ * Sorted by key, because Postgres gives no ordering guarantee for JSON and a
+ * contact whose fields reshuffle between page loads looks broken.
+ *
+ * Non-string values are dropped rather than coerced. Everything an import
+ * writes is a string, so anything else got there another way and "[object
+ * Object]" on a contact page helps nobody.
+ */
+export function readCustomFields(attributes: unknown): Array<[string, string]> {
+  if (!attributes || typeof attributes !== "object" || Array.isArray(attributes)) {
+    return [];
+  }
+
+  return Object.entries(attributes as Record<string, unknown>)
+    .filter(
+      (entry): entry is [string, string] =>
+        typeof entry[1] === "string" && entry[1].trim().length > 0,
+    )
+    .sort(([a], [b]) => a.localeCompare(b));
+}

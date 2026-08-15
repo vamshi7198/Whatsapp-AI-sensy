@@ -3,7 +3,7 @@ import { NextResponse } from "next/server";
 import { audit } from "@/lib/audit";
 import { getCurrentUser } from "@/lib/auth/session";
 import { toCsvRow } from "@/lib/contacts/csv";
-import { buildContactWhere } from "@/lib/contacts/service";
+import { buildContactWhere, readCustomFields } from "@/lib/contacts/service";
 import { prisma } from "@/lib/db";
 import { can } from "@/lib/rbac";
 
@@ -59,16 +59,38 @@ export async function GET(request: Request) {
       whatsappStatus: true,
       lastContactedAt: true,
       createdAt: true,
+      attributes: true,
       tags: { select: { tag: { select: { name: true } } } },
     },
   });
 
+  /*
+    Custom fields become columns of their own.
+
+    Without this an export silently dropped them: import a file carrying an
+    address and an AWB number, export it back, and both are gone — so the
+    export could not be used to round-trip or hand over the data, which is
+    most of what an export is for.
+
+    The column set is collected from the rows themselves rather than declared,
+    so a field added to next month's import appears here on its own. Union
+    across every row, since contacts imported from different files will not
+    all carry the same fields.
+  */
+  const customColumns = [
+    ...new Set(
+      contacts.flatMap((c) => readCustomFields(c.attributes).map(([key]) => key)),
+    ),
+  ].sort((a, b) => a.localeCompare(b));
+
   const iso = (d: Date | null) => (d ? d.toISOString() : "");
 
   const lines = [
-    COLUMNS.join(","),
-    ...contacts.map((c) =>
-      toCsvRow([
+    [...COLUMNS, ...customColumns].join(","),
+    ...contacts.map((c) => {
+      const fields = new Map(readCustomFields(c.attributes));
+
+      return toCsvRow([
         c.name ?? "",
         c.phoneE164,
         c.email ?? "",
@@ -79,8 +101,11 @@ export async function GET(request: Request) {
         c.whatsappStatus,
         iso(c.lastContactedAt),
         iso(c.createdAt),
-      ]),
-    ),
+        // Blank where a contact does not have this one, so every row still
+        // lines up with the header.
+        ...customColumns.map((key) => fields.get(key) ?? ""),
+      ]);
+    }),
   ];
 
   await audit(user, "contact.export", {
