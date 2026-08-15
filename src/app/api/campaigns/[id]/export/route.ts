@@ -3,7 +3,7 @@ import { NextResponse } from "next/server";
 import { audit } from "@/lib/audit";
 import { getCurrentUser } from "@/lib/auth/session";
 import { SKIP_REASON_LABELS } from "@/lib/campaigns/audience";
-import { escapeCsvCell } from "@/lib/contacts/csv";
+import { toCsvRow } from "@/lib/contacts/csv";
 import { prisma } from "@/lib/db";
 import { can } from "@/lib/rbac";
 
@@ -63,7 +63,7 @@ export async function GET(
   const lines = [
     COLUMNS.join(","),
     ...recipients.map((r) =>
-      [
+      toCsvRow([
         r.name ?? "",
         r.phoneE164,
         r.status,
@@ -79,9 +79,7 @@ export async function GET(
                 r.skipReason as keyof typeof SKIP_REASON_LABELS
               ] ?? r.skipReason)
             : ""),
-      ]
-        .map((value) => `"${escapeCsvCell(value).replace(/"/g, '""')}"`)
-        .join(","),
+      ]),
     ),
   ];
 

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   escapeCsvCell,
+  toCsvRow,
   parseContactCsv,
   parseTags,
   suggestMapping,
@@ -197,5 +198,54 @@ describe("escapeCsvCell", () => {
     // Escaped for safety; the leading quote is a display artefact in Excel,
     // and the value survives a round-trip.
     expect(escapeCsvCell("+919876543210")).toBe("'+919876543210");
+  });
+});
+
+describe("toCsvRow", () => {
+  /*
+    A cell can be dangerous in two unrelated ways at once, and handling only
+    one produces a file that is either unsafe or corrupt. These test the
+    combination, which is what an export actually writes.
+  */
+
+  it("keeps a value containing a comma in its own column", () => {
+    // The quiet one. Unquoted, "Sharma, Vamshi" becomes two columns and every
+    // later field in that row shifts — a corrupt export that looks fine.
+    //
+    // The phone keeps its leading apostrophe: it starts with "+", which Excel
+    // treats as a formula, so it is escaped like any other. Documented in the
+    // escapeCsvCell tests above.
+    expect(toCsvRow(["Sharma, Vamshi", "+919876543210"])).toBe(
+      "\"Sharma, Vamshi\",\"'+919876543210\"",
+    );
+  });
+
+  it("escapes quotes rather than ending the field early", () => {
+    expect(toCsvRow(['He said "hello"'])).toBe('"He said ""hello"""');
+  });
+
+  it("keeps a newline inside the field instead of starting a new row", () => {
+    expect(toCsvRow(["line one\nline two"])).toBe('"line one\nline two"');
+  });
+
+  it("defuses a formula AND keeps it in one column", () => {
+    const nasty = '=HYPERLINK("http://evil.example","click"),extra';
+
+    expect(toCsvRow([nasty, "safe"])).toBe(
+      '"\'=HYPERLINK(""http://evil.example"",""click""),extra","safe"',
+    );
+  });
+
+  it("survives every hostile shape at once", () => {
+    // Formula start, comma, quote, and newline in one value.
+    const row = toCsvRow(['=cmd|"/c calc"!A1, and\nmore', "b"]);
+
+    // Two fields, and the first is neutralised.
+    expect(row.startsWith('"\'=cmd')).toBe(true);
+    expect(row.endsWith('","b"')).toBe(true);
+  });
+
+  it("writes an empty field for null and undefined", () => {
+    expect(toCsvRow([null, undefined, "x"])).toBe('"","","x"');
   });
 });

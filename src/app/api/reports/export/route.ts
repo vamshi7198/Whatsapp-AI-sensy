@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 
 import { audit } from "@/lib/audit";
 import { getCurrentUser } from "@/lib/auth/session";
-import { escapeCsvCell } from "@/lib/contacts/csv";
+import { toCsvRow } from "@/lib/contacts/csv";
 import { can } from "@/lib/rbac";
 import { getCampaignReport, rangeFromPreset } from "@/lib/reports/service";
 
@@ -48,7 +48,7 @@ export async function GET(request: Request) {
   const lines = [
     COLUMNS.join(","),
     ...campaigns.map((c) =>
-      [
+      toCsvRow([
         c.name,
         c.templateName,
         c.category,
@@ -65,11 +65,7 @@ export async function GET(request: Request) {
         rate(c.readCount, c.sentCount),
         rate(c.failedCount, c.sentCount),
         rate(c.repliedCount, c.sentCount),
-      ]
-        // Escaped against formula injection: a campaign named "=cmd|..." must
-        // not execute when the file is opened in Excel.
-        .map((value) => `"${escapeCsvCell(value).replace(/"/g, '""')}"`)
-        .join(","),
+      ]),
     ),
   ];
 

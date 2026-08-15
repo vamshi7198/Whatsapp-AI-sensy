@@ -203,3 +203,26 @@ export function escapeCsvCell(value: string | null | undefined): string {
   const str = String(value);
   return /^[=+\-@\t\r]/.test(str) ? `'${str}` : str;
 }
+
+/**
+ * One row of CSV, safe to write.
+ *
+ * Two separate hazards, handled together because handling only one produces a
+ * file that is either dangerous or corrupt:
+ *
+ *  - A leading =, +, - or @ makes Excel treat the value as a formula, so a
+ *    contact named =HYPERLINK(...) runs when the file is opened. escapeCsvCell
+ *    defuses that.
+ *  - A comma, quote or newline inside a value breaks the column structure, so
+ *    a contact named "Sharma, Vamshi" silently shifts every later column in
+ *    that row. Quoting handles that.
+ *
+ * This existed correctly but was written out longhand in all three export
+ * routes. Three copies of a security control is two too many — the day someone
+ * adds a fourth export, or edits one of the three, they diverge silently.
+ */
+export function toCsvRow(values: Array<string | null | undefined>): string {
+  return values
+    .map((value) => `"${escapeCsvCell(value).replace(/"/g, '""')}"`)
+    .join(",");
+}

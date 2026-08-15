@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 
 import { audit } from "@/lib/audit";
 import { getCurrentUser } from "@/lib/auth/session";
-import { escapeCsvCell } from "@/lib/contacts/csv";
+import { toCsvRow } from "@/lib/contacts/csv";
 import { buildContactWhere } from "@/lib/contacts/service";
 import { prisma } from "@/lib/db";
 import { can } from "@/lib/rbac";
@@ -68,7 +68,7 @@ export async function GET(request: Request) {
   const lines = [
     COLUMNS.join(","),
     ...contacts.map((c) =>
-      [
+      toCsvRow([
         c.name ?? "",
         c.phoneE164,
         c.email ?? "",
@@ -79,11 +79,7 @@ export async function GET(request: Request) {
         c.whatsappStatus,
         iso(c.lastContactedAt),
         iso(c.createdAt),
-      ]
-        // Every cell is escaped against formula injection, then quoted so
-        // commas and quotes inside values cannot break the column structure.
-        .map((value) => `"${escapeCsvCell(value).replace(/"/g, '""')}"`)
-        .join(","),
+      ]),
     ),
   ];
 
