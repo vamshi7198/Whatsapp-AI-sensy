@@ -157,31 +157,66 @@ export async function createCampaign(
     };
   }
 
-  const campaign = await prisma.campaign.create({
-    data: {
-      name: input.name,
-      idempotencyKey: input.idempotencyKey,
-      // SCHEDULED is left alone by the sender until its time arrives.
-      status: input.scheduledAt ? "SCHEDULED" : "QUEUED",
-      scheduledAt: input.scheduledAt,
-      templateId: template.id,
-      templateName: template.name,
-      templateLanguage: template.language,
-      templateCategory: template.category,
-      audienceType: input.audience.type,
-      audienceFilter: input.audience as unknown as Prisma.InputJsonValue,
-      variableMapping: input.mapping as unknown as Prisma.InputJsonValue,
-      headerMediaUrl: input.headerMediaUrl,
-      headerMediaType: requiredMedia ?? input.headerMediaType,
-      totalRecipients: sendable,
-      skippedCount,
-      createdById: input.createdById,
-      // The unique (campaignId, phoneE164) constraint means a contact cannot
-      // appear twice even if the audience selection overlapped.
-      recipients: { createMany: { data: recipients, skipDuplicates: true } },
-    },
-    select: { id: true },
-  });
+  // The findUnique above is an optimisation, not the guard. Everything between
+  // it and this insert — loading the template, resolving the audience, checking
+  // every recipient's variables — can take hundreds of milliseconds on a large
+  // list, so two clicks can both find nothing and both arrive here. The unique
+  // key is what actually decides it; losing that race means the other click
+  // already built this campaign, which is a success, not a failure.
+  let campaign: { id: string };
+
+  try {
+    campaign = await prisma.campaign.create({
+      data: {
+        name: input.name,
+        idempotencyKey: input.idempotencyKey,
+        // SCHEDULED is left alone by the sender until its time arrives.
+        status: input.scheduledAt ? "SCHEDULED" : "QUEUED",
+        scheduledAt: input.scheduledAt,
+        templateId: template.id,
+        templateName: template.name,
+        templateLanguage: template.language,
+        templateCategory: template.category,
+        audienceType: input.audience.type,
+        audienceFilter: input.audience as unknown as Prisma.InputJsonValue,
+        variableMapping: input.mapping as unknown as Prisma.InputJsonValue,
+        headerMediaUrl: input.headerMediaUrl,
+        headerMediaType: requiredMedia ?? input.headerMediaType,
+        totalRecipients: sendable,
+        skippedCount,
+        createdById: input.createdById,
+        // The unique (campaignId, phoneE164) constraint means a contact cannot
+        // appear twice even if the audience selection overlapped.
+        recipients: { createMany: { data: recipients, skipDuplicates: true } },
+      },
+      select: { id: true },
+    });
+  } catch (error) {
+    // Lost the race on the unique key: the other click already created it.
+    //
+    // Without this the second click surfaced "The campaign could not be
+    // started. Please try again." for a campaign that had in fact started and
+    // was already messaging people. Following that instruction reloads the
+    // page, which mints a fresh idempotency key, and the next click sends the
+    // whole audience a second time — so the missing catch turned a harmless
+    // duplicate into a real double-send, at double the cost.
+    if (
+      error instanceof Prisma.PrismaClientKnownRequestError &&
+      error.code === "P2002"
+    ) {
+      const winner = await prisma.campaign.findUnique({
+        where: { idempotencyKey: input.idempotencyKey },
+        select: { id: true },
+      });
+
+      if (winner) {
+        log.info({ campaignId: winner.id }, "Duplicate submit lost the race");
+        return { ok: true, campaignId: winner.id, wasDuplicate: true };
+      }
+    }
+
+    throw error;
+  }
 
   log.info(
     {
