@@ -11,6 +11,7 @@ import { isMetaConnected } from "@/lib/settings";
 import { cn } from "@/lib/utils";
 
 import { ConversationList } from "./_components/conversation-list";
+import { InboxAutoRefresh } from "./_components/auto-refresh";
 import { ConversationThread } from "./_components/conversation-thread";
 import { InboxEmpty } from "./_components/inbox-empty";
 
@@ -51,6 +52,8 @@ export default async function InboxPage({
 
   return (
     <div className="space-y-4">
+      <InboxAutoRefresh />
+
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div>
           <h1 className="text-2xl font-semibold tracking-tight text-slate-900 dark:text-slate-50">
@@ -118,6 +121,7 @@ export default async function InboxPage({
                 unreadCount: selected.unreadCount,
               }}
               messages={selected.messages}
+              hasEarlier={selected.hasEarlier}
               window={{
                 open: window.open,
                 hoursLeft: window.hoursLeft,

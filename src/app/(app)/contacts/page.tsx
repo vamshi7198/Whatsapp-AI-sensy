@@ -29,7 +29,17 @@ export default async function ContactsPage({
   const user = await requireAuth("contact:view");
   const params = await searchParams;
 
-  const filter = contactFilterSchema.parse({
+  // safeParse, because every value here comes from the URL bar.
+  //
+  // .parse() threw on anything unexpected, and a server component throwing
+  // means a raw Next.js error page — not an empty result, the whole screen.
+  // Typing 121 characters into the search box was enough to do it: the box has
+  // no length limit and the schema caps search at 120. A hand-edited or stale
+  // link did the same.
+  //
+  // Falling back to the defaults shows the unfiltered list, which is what
+  // someone with a broken link wants anyway.
+  const parsed = contactFilterSchema.safeParse({
     search: params.search,
     tagIds: params.tag
       ? Array.isArray(params.tag)
@@ -42,6 +52,10 @@ export default async function ContactsPage({
     sortDir: params.sortDir,
     page: params.page,
   });
+
+  const filter = parsed.success
+    ? parsed.data
+    : contactFilterSchema.parse({});
 
   // Every filter the page is showing, so the export matches what is on screen.
   // Tags were previously left out entirely, which meant narrowing to one tag

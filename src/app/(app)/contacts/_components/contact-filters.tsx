@@ -60,6 +60,9 @@ export function ContactFilters({
           onChange={(e) => setSearch(e.target.value)}
           placeholder="Search name, phone or email"
           aria-label="Search contacts"
+          // Matches the cap in contactFilterSchema. Without it the box happily
+          // accepted more than the server would take.
+          maxLength={120}
         />
         <Button type="submit" variant="secondary" disabled={isPending}>
           Search

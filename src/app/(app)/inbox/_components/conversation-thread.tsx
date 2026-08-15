@@ -66,12 +66,15 @@ function StatusTicks({ status }: { status: string }) {
 export function ConversationThread({
   conversation,
   messages,
+  hasEarlier = false,
   window: serviceWindow,
   canSend,
   forms,
 }: {
   conversation: ConversationSummary;
   messages: ThreadMessage[];
+  /** Older messages exist above what was loaded. */
+  hasEarlier?: boolean;
   window: { open: boolean; hoursLeft: number; minutesLeft: number };
   canSend: boolean;
   /** Forms that can be sent to this person right now. */
@@ -149,6 +152,18 @@ export function ConversationThread({
         {messages.length === 0 && (
           <p className="py-8 text-center text-sm text-slate-400">
             No messages in this conversation yet.
+          </p>
+        )}
+
+        {/*
+          Said plainly, because the alternative is an agent believing the top of
+          this list is the start of the conversation and replying to something
+          they cannot see.
+        */}
+        {hasEarlier && (
+          <p className="py-3 text-center text-[11px] text-slate-400">
+            Showing the most recent {messages.length} messages. Earlier ones are
+            in this conversation but not on screen.
           </p>
         )}
 

@@ -163,16 +163,29 @@ export async function listConversations(options: {
   });
 }
 
+/** How much of a conversation one screen loads. */
+export const THREAD_PAGE_SIZE = 200;
+
+/**
+ * One conversation, with its most recent messages.
+ *
+ * `desc` then reversed, not `asc`. Taking the first 200 in ascending order
+ * returns the OLDEST 200 — so on any contact past that many messages the agent
+ * scrolled to what looked like the end of the thread and read history that
+ * stopped months ago, while the composer stayed enabled because it is gated on
+ * lastInboundAt rather than on what was rendered. They would reply to a message
+ * that was not on the screen.
+ */
 export async function getConversation(id: string) {
-  return prisma.conversation.findUnique({
+  const conversation = await prisma.conversation.findUnique({
     where: { id },
     include: {
       contact: {
         include: { tags: { include: { tag: true } } },
       },
       messages: {
-        orderBy: { createdAt: "asc" },
-        take: 200,
+        orderBy: { createdAt: "desc" },
+        take: THREAD_PAGE_SIZE,
         select: {
           id: true,
           direction: true,
@@ -189,6 +202,16 @@ export async function getConversation(id: string) {
       },
     },
   });
+
+  if (!conversation) return null;
+
+  return {
+    ...conversation,
+    // Back into reading order for display.
+    messages: [...conversation.messages].reverse(),
+    /** True when older messages exist above what was loaded. */
+    hasEarlier: conversation.messages.length === THREAD_PAGE_SIZE,
+  };
 }
 
 export async function getUnreadTotal(): Promise<number> {
