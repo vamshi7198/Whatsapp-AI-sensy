@@ -46,8 +46,18 @@ export const SETTING_KEYS = {
    * journey waits have quietly stopped happening.
    */
   SCHEDULER_LAST_RUN: "ops.scheduler_last_run",
-  /** When a database backup last succeeded. */
+  /** When a database backup last succeeded, wherever it ended up. */
   LAST_BACKUP_AT: "ops.last_backup_at",
+  /**
+   * When a backup last made it OFF this machine.
+   *
+   * Tracked apart from LAST_BACKUP_AT because they fail independently and only
+   * this one is protection. A copy sitting beside the database on the same disk
+   * survives nothing that actually happens to a laptop — theft, a dead drive,
+   * ransomware — so a run that fell back to local storage must not be allowed
+   * to report the same green tick as one that reached Drive.
+   */
+  LAST_BACKUP_OFFSITE_AT: "ops.last_backup_offsite_at",
 } as const;
 
 /** Meta supports each Graph API version for roughly two years. */

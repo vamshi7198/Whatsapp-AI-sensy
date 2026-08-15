@@ -31,6 +31,20 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+# --- Leave a trace --------------------------------------------------------
+
+# A scheduled run has no console. Without this a failure produces nothing at
+# all: no file, no error, no clue -- which is how two missed nights went
+# unexplained and unnoticed. The transcript is the only evidence that survives
+# a run nobody watched.
+$logDir = Join-Path (Resolve-Path (Join-Path $PSScriptRoot "..")).Path "logs"
+if (-not (Test-Path $logDir)) {
+    New-Item -ItemType Directory -Path $logDir -Force | Out-Null
+}
+
+$transcript = Join-Path $logDir ("backup-" + (Get-Date -Format "yyyy-MM-dd") + ".log")
+try { Start-Transcript -Path $transcript -Append -ErrorAction Stop | Out-Null } catch { }
+
 # --- Where it goes --------------------------------------------------------
 
 if (-not $OffsiteDir) {
@@ -95,10 +109,24 @@ $zipFile = "$sqlFile.zip"
 
 try {
     Write-Host "Backing up $Database..."
-    & $pgDump -h localhost -U $User -d $Database -f $sqlFile --no-owner --no-privileges
+
+    # pg_dump reports anything it wants to say on stderr, and with
+    # $ErrorActionPreference = "Stop" PowerShell promotes a native command's
+    # stderr into a terminating error. That would jump past the exit-code check
+    # below and out to `finally`, losing both the real reason and the friendly
+    # message. Relaxed for this one call so the exit code decides, which is the
+    # only thing that actually reports whether the dump worked.
+    $previous = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try {
+        & $pgDump -h localhost -U $User -d $Database -f $sqlFile --no-owner --no-privileges 2>&1 |
+            ForEach-Object { Write-Host "  $_" }
+    } finally {
+        $ErrorActionPreference = $previous
+    }
 
     if ($LASTEXITCODE -ne 0) {
-        Write-Error "Backup failed - the database could not be read."
+        Write-Error "Backup failed - the database could not be read (pg_dump exit $LASTEXITCODE)."
         exit 1
     }
 
@@ -150,12 +178,25 @@ try {
 
     # --- Tell the app, so /api/health can report a stalled backup ---------
 
+    # The --offsite flag is what /api/health judges on. A run that fell back to
+    # local storage still stamps the plain timestamp, because a dump really was
+    # taken, but it must not claim the offsite one: a copy on the same disk as
+    # the database is not protection, and reporting the two identically is how
+    # a machine ends up with a folder full of backups and nothing to restore
+    # from after the disk it was sitting on dies.
     try {
         $npm = "C:\Program Files\nodejs\npm.cmd"
         if (Test-Path $npm) {
             Push-Location $appRoot
-            & $npm run --silent record-backup 2>$null | Out-Null
-            Pop-Location
+            try {
+                if ($landed) {
+                    & $npm run --silent record-backup -- --offsite 2>$null | Out-Null
+                } else {
+                    & $npm run --silent record-backup 2>$null | Out-Null
+                }
+            } finally {
+                Pop-Location
+            }
         }
     } catch {
         Write-Host "Could not record the backup time (harmless)." -ForegroundColor DarkGray
@@ -185,6 +226,7 @@ finally {
     Remove-Item Env:PGPASSWORD -ErrorAction SilentlyContinue
     # The scratch copy never outlives the run, whatever happened above.
     if (Test-Path $work) { Remove-Item $work -Recurse -Force -ErrorAction SilentlyContinue }
+    try { Stop-Transcript | Out-Null } catch { }
 }
 
 Write-Host ""

@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 
 import { prisma } from "@/lib/db";
 import { moduleLogger } from "@/lib/logger";
+import { assessBackup } from "@/lib/ops/backup-health";
 import { SETTING_KEYS, getSetting, isMetaConnected } from "@/lib/settings";
 
 const log = moduleLogger("health");
@@ -103,18 +104,26 @@ export async function GET() {
 
   /* --- Backups ---------------------------------------------------------- */
 
-  try {
-    const lastBackup = await getSetting(SETTING_KEYS.LAST_BACKUP_AT);
+  /*
+    Judged on the OFFSITE timestamp, not on whether a dump ran.
 
-    if (!lastBackup) {
-      checks.backup = "unknown";
-    } else {
-      const hours = Math.round(
-        (Date.now() - new Date(lastBackup).getTime()) / 3_600_000,
-      );
-      // Daily schedule, so two days without one means it has stopped.
-      checks.backup = hours > 48 ? `stale ${hours}h` : "ok";
-    }
+    This check previously set checks.backup and stopped there, without ever
+    touching `healthy` — so the endpoint reported {"status":"ok"} with
+    "backup":"stale 500h" sitting inside it, and the warning log below is
+    gated on `healthy` so it never fired either. Both signals were silent
+    while backups had in fact stopped, which is the whole reason nobody
+    noticed for two nights.
+  */
+  try {
+    const [offsiteAt, anyAt] = await Promise.all([
+      getSetting(SETTING_KEYS.LAST_BACKUP_OFFSITE_AT),
+      getSetting(SETTING_KEYS.LAST_BACKUP_AT),
+    ]);
+
+    const assessment = assessBackup({ offsiteAt, anyAt, now: Date.now() });
+
+    checks.backup = assessment.label;
+    if (!assessment.healthy) healthy = false;
   } catch {
     checks.backup = "unknown";
   }

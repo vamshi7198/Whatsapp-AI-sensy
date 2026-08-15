@@ -211,8 +211,21 @@ $backupAction = New-ScheduledTaskAction `
 
 $backupTrigger = New-ScheduledTaskTrigger -Daily -At "02:30"
 
-$backupPrincipal = New-ScheduledTaskPrincipal -UserId "SYSTEM" `
-    -LogonType ServiceAccount -RunLevel Highest
+# Runs as the signed-in user, NOT as SYSTEM like the other two tasks.
+#
+# Google Drive's G: is a virtual drive mounted inside a user's session, not a
+# volume the machine has. Get-Volume -DriveLetter G returns nothing at all. A
+# SYSTEM ServiceAccount task has no session, so it cannot see G: no matter what
+# permissions it holds — every probe in backup.ps1 fails, $OffsiteDir comes out
+# empty, and the backup can only ever land in the local fallback.
+#
+# That is how backups stopped reaching Drive while the task itself looked
+# perfectly healthy. Drive itself only runs in the user's session too, so there
+# is no principal that both has admin rights and can reach the folder: it has
+# to be the user.
+$backupPrincipal = New-ScheduledTaskPrincipal `
+    -UserId "$env:USERDOMAIN\$env:USERNAME" `
+    -LogonType Interactive -RunLevel Limited
 
 $backupSettings = New-ScheduledTaskSettingsSet `
     -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
@@ -228,7 +241,10 @@ Register-ScheduledTask -TaskName "UncannedWhatsAppBackup" `
     -Principal $backupPrincipal -Settings $backupSettings `
     -Description "Daily database backup for Uncanned WhatsApp." | Out-Null
 
-Write-Host "      Backup: daily at 2:30am." -ForegroundColor Green
+Write-Host "      Backup: daily at 2:30am (as $env:USERNAME)." -ForegroundColor Green
+Write-Host "        Runs while you are signed in - Google Drive only exists" -ForegroundColor DarkGray
+Write-Host "        inside your session. A run missed overnight is taken at" -ForegroundColor DarkGray
+Write-Host "        the next sign-in, and /api/health reports it after 30h." -ForegroundColor DarkGray
 
 # Taken now as well, so there is a copy from this moment rather than one
 # starting tomorrow.
