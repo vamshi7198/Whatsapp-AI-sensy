@@ -304,6 +304,18 @@ function ResultStep({ result }: { result: ImportState }) {
     { value: result.created, label: "new contacts", tone: "emerald" },
     { value: result.updated, label: "updated", tone: "blue" },
     { value: result.skipped, label: "duplicates in file", tone: "slate" },
+    // Only shown when it happened, so an ordinary import is not cluttered by a
+    // zero — but never hidden when it did, because "my file had 500 rows and
+    // 497 imported" needs an answer.
+    ...(result.skippedDeleted
+      ? ([
+          {
+            value: result.skippedDeleted,
+            label: "previously deleted, left alone",
+            tone: "slate",
+          },
+        ] as const)
+      : []),
     { value: result.errorCount, label: "rows with problems", tone: "amber" },
   ] as const;
 

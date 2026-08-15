@@ -81,6 +81,8 @@ export interface ImportState {
   created?: number;
   updated?: number;
   skipped?: number;
+  /** Rows matching a deleted contact, which an import must not revive. */
+  skippedDeleted?: number;
   errorCount?: number;
   errors?: { line: number; reason: string; rawPhone?: string }[];
 }
@@ -142,6 +144,8 @@ export async function runImport(
 
     let created = 0;
     let updated = 0;
+    /** Rows matching a contact that was deleted, which import must not revive. */
+    let skippedDeleted = 0;
 
     // Chunked so a large file does not build one enormous transaction.
     const CHUNK = 200;
@@ -152,8 +156,16 @@ export async function runImport(
         chunk.map(async (row) => {
           const existing = await prisma.contact.findUnique({
             where: { phoneE164: row.phoneE164 },
-            select: { id: true },
+            select: { id: true, deletedAt: true },
           });
+
+          // Someone who asked to be erased is left alone entirely — not even
+          // their name is refreshed from the file. Counted and reported, so
+          // the numbers add up and nobody wonders where the row went.
+          if (existing?.deletedAt) {
+            skippedDeleted += 1;
+            return;
+          }
 
           const contact = await prisma.contact.upsert({
             where: { phoneE164: row.phoneE164 },
@@ -165,7 +177,17 @@ export async function runImport(
               ...(Object.keys(row.attributes).length
                 ? { attributes: row.attributes }
                 : {}),
-              deletedAt: null,
+              // deletedAt is deliberately NOT cleared here.
+              //
+              // It used to be, so re-importing a list that still contained
+              // someone who had asked to be erased brought them back and made
+              // them marketable again — counted under "updated" in the summary
+              // with nothing said. Under India's DPDP that is an erasure
+              // request quietly reversing itself, and old CSVs get re-imported
+              // all the time.
+              //
+              // A deleted contact stays deleted. Restoring one is a decision
+              // somebody makes on purpose, not a side effect of a file.
             },
             create: {
               name: row.name,
@@ -208,7 +230,7 @@ export async function runImport(
         status: "COMPLETED",
         createdCount: created,
         updatedCount: updated,
-        skippedCount: parsed.duplicatesInFile,
+        skippedCount: parsed.duplicatesInFile + skippedDeleted,
         errorCount: parsed.errors.length,
         errorReport: parsed.errors.slice(0, 500) as never,
         completedAt: new Date(),
@@ -221,6 +243,7 @@ export async function runImport(
       metadata: {
         created,
         updated,
+        skippedDeleted,
         errors: parsed.errors.length,
         markedOptedIn: markOptedIn,
       },
@@ -233,6 +256,7 @@ export async function runImport(
       created,
       updated,
       skipped: parsed.duplicatesInFile,
+      skippedDeleted,
       errorCount: parsed.errors.length,
       errors: parsed.errors.slice(0, 100),
     };

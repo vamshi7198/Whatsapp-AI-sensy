@@ -68,6 +68,25 @@ export async function createContact(
       };
     }
 
+    // A deleted contact is refused rather than quietly restored.
+    //
+    // The guard above only fired for rows that were NOT deleted, so adding a
+    // number belonging to someone erased fell straight into the upsert, which
+    // cleared deletedAt and stamped optInStatus OPTED_IN with optInAt of now.
+    //
+    // Not an attack — a deleted contact is invisible everywhere in the app, so
+    // an agent re-adding someone they believe is new does this by accident and
+    // manufactures a consent record dated today. That record is the evidence
+    // the business would rely on to prove the person agreed to be messaged.
+    //
+    // Restoring is a real decision and needs the permission that deleting did.
+    if (existing?.deletedAt) {
+      return {
+        error:
+          "This number belongs to a contact that was deleted. Ask an administrator to restore it rather than adding it again — re-adding would record fresh marketing consent that was never given.",
+      };
+    }
+
     const contact = await prisma.contact.upsert({
       where: { phoneE164: data.phone },
       // Restores a previously soft-deleted contact rather than failing.

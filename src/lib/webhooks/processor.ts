@@ -321,6 +321,14 @@ async function applyInboundMessage(
     update: {
       lastInboundAt: event.timestamp,
       whatsappStatus: "VALID",
+      // Restored here, unlike on CSV import, and the difference is who acted.
+      // This person just messaged the business themselves, so having their
+      // conversation appear is what they expect; a row in a spreadsheet is not
+      // an act by the customer at all.
+      //
+      // Note what is NOT set: optInStatus and marketingOptOut are untouched, so
+      // getting back in touch restores the conversation without restoring
+      // permission to market at them.
       deletedAt: null,
       // Only fill a blank name; never overwrite a curated one with a
       // WhatsApp profile name.
