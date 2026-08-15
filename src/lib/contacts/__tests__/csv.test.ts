@@ -158,6 +158,76 @@ describe("parseContactCsv", () => {
     });
   });
 
+  describe("a comma inside a cell that was not quoted", () => {
+    /*
+      The real file that produced this: a tags cell reading
+      `pilot,influencers,hyderabad` saved without quotes.
+
+      Papa reports TooManyFields and hands the surplus back under
+      `__parsed_extra` as an ARRAY. That was ignored, so two things happened:
+      the attribute loop called .trim() on the array and threw, killing the
+      whole import with "could not be completed" and no reason, identically on
+      every retry — and had it not thrown, the row would have imported with
+      tags holding only "pilot" and the address column holding "influencers".
+    */
+    const shifted = [
+      "name,phone,email,tags,address",
+      "Vamshi,7893299141,,pilot,influencers,hyderabad,plot no 76, Vijayasree Colony, LB Nagar",
+    ].join("\n");
+
+    it("does not throw", () => {
+      expect(() => parseContactCsv(shifted, MAPPING)).not.toThrow();
+    });
+
+    it("refuses the row instead of importing it shifted", () => {
+      const result = parseContactCsv(shifted, MAPPING);
+
+      // Wrong data that looks right is worse than a row somebody has to fix.
+      expect(result.rows).toHaveLength(0);
+      expect(result.errors).toHaveLength(1);
+      expect(result.errors[0].line).toBe(2);
+    });
+
+    it("names the cause, not the symptom", () => {
+      const [error] = parseContactCsv(shifted, MAPPING).errors;
+
+      // "10 values but 5 columns" is a fact about the file. Someone has to be
+      // able to act on it without knowing what a parser is.
+      expect(error.reason).toMatch(/wrapped in quotes/i);
+      // Nine, because the fixture above splits into 5 named columns plus 4
+      // strays. The point is that the count is real, not that it is 9.
+      expect(error.reason).toContain("9 values");
+      expect(error.reason).toContain("5 columns");
+    });
+
+    it("accepts the same data once the cells are quoted", () => {
+      const quoted = [
+        "name,phone,email,tags,address",
+        'Vamshi,7893299141,,"pilot,influencers,hyderabad","plot no 76, Vijayasree Colony, LB Nagar"',
+      ].join("\n");
+
+      const result = parseContactCsv(quoted, MAPPING);
+
+      expect(result.errors).toHaveLength(0);
+      expect(result.rows[0].tags).toEqual(["pilot", "influencers", "hyderabad"]);
+      expect(result.rows[0].attributes.address).toBe(
+        "plot no 76, Vijayasree Colony, LB Nagar",
+      );
+    });
+
+    it("accepts semicolon-separated tags, which need no quoting at all", () => {
+      const semis = [
+        "name,phone,email,tags,address",
+        'Vamshi,7893299141,,pilot;influencers;hyderabad,"plot no 76, LB Nagar"',
+      ].join("\n");
+
+      const result = parseContactCsv(semis, MAPPING);
+
+      expect(result.errors).toHaveLength(0);
+      expect(result.rows[0].tags).toEqual(["pilot", "influencers", "hyderabad"]);
+    });
+  });
+
   it("skips blank lines without reporting them as errors", () => {
     const csv = [
       "name,phone",

@@ -153,6 +153,40 @@ export function parseContactCsv(
 
     if (byPhone.size >= IMPORT_LIMITS.MAX_ROWS) return;
 
+    /*
+      More values on this line than there are columns.
+
+      This is what an unquoted comma inside a cell looks like by the time it
+      reaches here. A tags cell reading `pilot,influencers,hyderabad` becomes
+      three separate values, so tags takes "pilot", the NEXT column takes
+      "influencers", and everything after it shifts by one — the address ends
+      up holding a tag, and the real address is spread across columns that do
+      not exist.
+
+      Papa reports this as TooManyFields and it was being ignored, which was
+      bad in two ways. The extras arrive under `__parsed_extra` as an ARRAY,
+      so the attribute loop below called .trim() on it and threw — the import
+      died with "could not be completed" and no hint why, identically on every
+      retry. And had it not thrown, the row would have imported silently with
+      one person's address holding another field's value.
+
+      The row is refused rather than imported shifted: wrong data that looks
+      right is worse than a row somebody has to fix.
+    */
+    const extra = (record as Record<string, unknown>).__parsed_extra;
+
+    if (Array.isArray(extra) && extra.length > 0) {
+      errors.push({
+        line,
+        reason:
+          `This line has ${headers.length + extra.length} values but the file has ` +
+          `${headers.length} columns, so the values after "${headers[headers.length - 1]}" ` +
+          `have shifted. A cell containing a comma must be wrapped in quotes — ` +
+          `check the tags and address columns.`,
+      });
+      return;
+    }
+
     const rawPhone = record[mapping.phone];
     const phoneResult = normalizePhone(rawPhone);
 
@@ -194,7 +228,13 @@ export function parseContactCsv(
     let attributeCount = 0;
 
     for (const [key, value] of Object.entries(record)) {
-      if (mappedColumns.has(key) || !value?.trim()) continue;
+      // Belt and braces after the check above: Papa can hand back a value that
+      // is not a string (an array, under __parsed_extra), and `value?.trim()`
+      // does not guard against that — optional chaining covers null and
+      // undefined, not a missing method. That threw and took the whole import
+      // with it.
+      if (typeof value !== "string") continue;
+      if (mappedColumns.has(key) || !value.trim()) continue;
       if (attributeCount >= MAX_ATTRIBUTES) break;
 
       attributes[key.slice(0, MAX_ATTRIBUTE_KEY)] = value
