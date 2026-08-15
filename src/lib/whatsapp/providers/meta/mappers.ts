@@ -130,6 +130,16 @@ interface MetaWebhookPayload {
   object?: string;
   entry?: Array<{
     id?: string;
+    /**
+     * When Meta generated this entry, in seconds.
+     *
+     * Carried through to template and quality events so their dedupe keys can
+     * tell one occurrence from the next. Without it a template that went
+     * APPROVED, then PAUSED, then APPROVED again hashed the second APPROVED
+     * identically to the first, and it was dropped as a duplicate — leaving
+     * the local record PAUSED forever, which blocks every campaign using it.
+     */
+    time?: number;
     changes?: Array<{
       field?: string;
       value?: {
@@ -398,6 +408,7 @@ export function parseMetaWebhook(payload: unknown): NormalisedWebhookEvent[] {
           language: value.message_template_language ?? "",
           status: toTemplateStatus(value.event ?? ""),
           reason: value.reason,
+          occurredAt: entry.time,
           raw: value,
         });
       }
@@ -409,6 +420,7 @@ export function parseMetaWebhook(payload: unknown): NormalisedWebhookEvent[] {
           phoneNumber: value.display_phone_number ?? "",
           qualityRating: value.event,
           messagingTier: value.current_limit,
+          occurredAt: entry.time,
           raw: value,
         });
       }

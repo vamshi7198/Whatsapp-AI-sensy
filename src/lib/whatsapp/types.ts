@@ -328,6 +328,14 @@ export type NormalisedWebhookEvent =
       language: string;
       status: TemplateStatus;
       reason?: string;
+      /**
+       * Meta's entry time, in seconds. Part of the dedupe key so the SECOND
+       * time a template reaches a status is not mistaken for a replay of the
+       * first — a template that went APPROVED, PAUSED, APPROVED had the last
+       * event dropped and stayed PAUSED locally, blocking every campaign
+       * using it.
+       */
+      occurredAt?: number;
       raw: unknown;
     }
   | {
@@ -335,6 +343,12 @@ export type NormalisedWebhookEvent =
       phoneNumber: string;
       qualityRating?: string;
       messagingTier?: string;
+      /**
+       * As above. A rating that oscillates GREEN → YELLOW → GREEN otherwise
+       * froze on the stale value, which is dangerous in the direction that
+       * reads GREEN while the number is actually flagged.
+       */
+      occurredAt?: number;
       raw: unknown;
     }
   | { kind: "unknown"; raw: unknown };

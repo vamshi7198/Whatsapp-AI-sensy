@@ -227,16 +227,47 @@ async function runActions(
         }
         break;
 
-      case "SET_OPT_OUT":
-        await prisma.contact.update({
-          where: { id: context.contactId },
-          data: {
-            marketingOptOut: true,
-            marketingOptOutAt: new Date(),
-            optInStatus: "OPTED_OUT",
-          },
+      case "SET_OPT_OUT": {
+        // The flag AND the audit row, in one transaction — the same thing the
+        // keyword path in the webhook processor does.
+        //
+        // This wrote only the flag. The schema comment on OptOut states the
+        // rule outright: "a boolean proves nothing". If a customer ever
+        // disputed being messaged, or asked when they opted out, the record
+        // for anyone opted out by an automation simply did not exist.
+        const now = new Date();
+
+        const already = await prisma.optOut.findFirst({
+          where: { contactId: context.contactId, sourceMessageId: context.externalMessageId },
+          select: { id: true },
         });
+
+        await prisma.$transaction([
+          prisma.contact.update({
+            where: { id: context.contactId },
+            data: {
+              marketingOptOut: true,
+              marketingOptOutAt: now,
+              optInStatus: "OPTED_OUT",
+            },
+          }),
+          ...(already
+            ? []
+            : [
+                prisma.optOut.create({
+                  data: {
+                    contactId: context.contactId,
+                    phoneE164: context.phoneE164,
+                    scope: "MARKETING",
+                    reason: "An automation rule opted this contact out",
+                    sourceMessageId: context.externalMessageId,
+                    createdAt: now,
+                  },
+                }),
+              ]),
+        ]);
         break;
+      }
 
       case "SEND_TEXT":
         await sendAutoText(automationId, context, asTextConfig(action.config));

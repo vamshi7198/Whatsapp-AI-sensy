@@ -48,10 +48,30 @@ export function buildDedupeKey(event: NormalisedWebhookEvent): string {
       ? ["status", event.externalMessageId, event.status, String(event.timestamp.getTime())]
       : event.kind === "inbound_message"
         ? ["inbound", event.externalMessageId]
-        : event.kind === "template_status"
-          ? ["template", event.templateName, event.language, event.status]
+        : // Both of these carry the entry time, as status_update already did.
+          //
+          // Without it the SECOND time a template reached a status hashed
+          // identically to the first and was dropped as a replay — so a
+          // template that went APPROVED, PAUSED, then APPROVED again stayed
+          // PAUSED locally forever, blocking every campaign using it. A
+          // quality rating that oscillates froze the same way, dangerously in
+          // the direction that reads GREEN while the number is flagged.
+          event.kind === "template_status"
+          ? [
+              "template",
+              event.templateName,
+              event.language,
+              event.status,
+              String(event.occurredAt ?? ""),
+            ]
           : event.kind === "quality_update"
-            ? ["quality", event.phoneNumber, event.qualityRating ?? "", event.messagingTier ?? ""]
+            ? [
+                "quality",
+                event.phoneNumber,
+                event.qualityRating ?? "",
+                event.messagingTier ?? "",
+                String(event.occurredAt ?? ""),
+              ]
             : ["unknown", JSON.stringify(event.raw).slice(0, 500)];
 
   return createHash("sha256").update(parts.join("|")).digest("hex");

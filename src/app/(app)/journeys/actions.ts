@@ -430,15 +430,39 @@ export async function testJourneyAction(
       };
     }
 
-    const existing = await prisma.journeySession.findFirst({
-      where: { journeyId, contactId: contact.id },
+    // Only a session still in flight is in the way, and it is CANCELLED rather
+    // than deleted.
+    //
+    // This used to find any session at all and hard-delete it. Both
+    // JourneyStepRun and JourneyEvent cascade from the session, so testing
+    // against a number that belonged to a real customer erased the record of
+    // which options that person had chosen — the answers the journey exists to
+    // collect — along with the analytics built from them. The field is
+    // free-text with no restriction to a test contact, so a mistyped digit was
+    // all it took.
+    //
+    // Cancelling is enough now that the unique index only covers in-flight
+    // sessions: a CANCELLED one no longer blocks re-entry, and their history
+    // survives.
+    const live = await prisma.journeySession.findFirst({
+      where: {
+        journeyId,
+        contactId: contact.id,
+        status: { in: ["ACTIVE", "WAITING_FOR_REPLY", "WAITING_UNTIL", "HANDED_OFF"] },
+      },
       select: { id: true },
     });
 
-    // A previous test left them partway through, and the engine refuses a
-    // second entry. Clearing it is what "test again" means.
-    if (existing) {
-      await prisma.journeySession.delete({ where: { id: existing.id } });
+    if (live) {
+      await prisma.journeySession.update({
+        where: { id: live.id },
+        data: {
+          status: "CANCELLED",
+          endedReason: `Cancelled to re-test by ${user.name}`,
+          completedAt: new Date(),
+          currentStepId: null,
+        },
+      });
     }
 
     const result = await startJourney({
