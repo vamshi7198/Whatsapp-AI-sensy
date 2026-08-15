@@ -276,23 +276,37 @@ export async function recordMessageCost(messageId: string): Promise<void> {
   // for the same reason.
   if (!rate) return;
 
-  await prisma.$transaction([
-    prisma.message.update({
-      where: { id: messageId },
-      data: { estimatedCost: rate.rate },
-    }),
-    ...(message.campaignRecipient
-      ? [
-          prisma.campaign.update({
-            where: { id: message.campaignRecipient.campaignId },
-            data: {
-              actualCost: { increment: rate.rate },
-              currency: rate.currency,
-            },
-          }),
-        ]
-      : []),
-  ]);
+  // Claim the pricing before charging for it.
+  //
+  // The estimatedCost check near the top of this function is a read, and the
+  // delivered and read webhooks for one message arrive milliseconds apart —
+  // 1 ms apart with distinct payloads in this project's own live data, so two
+  // POSTs rather than one batch. Both read null and both incremented the
+  // campaign's actualCost.
+  //
+  // Only Campaign.actualCost was affected: the spend totals sum
+  // Message.estimatedCost, which is an absolute write and idempotent. Putting
+  // the filter on the write means exactly one of the two racing callers gets
+  // to increment.
+  const priced = await prisma.message.updateMany({
+    where: { id: messageId, estimatedCost: null },
+    data: { estimatedCost: rate.rate },
+  });
+
+  if (priced.count === 0) {
+    log.debug({ messageId }, "Message was priced by a concurrent update");
+    return;
+  }
+
+  if (message.campaignRecipient) {
+    await prisma.campaign.update({
+      where: { id: message.campaignRecipient.campaignId },
+      data: {
+        actualCost: { increment: rate.rate },
+        currency: rate.currency,
+      },
+    });
+  }
 }
 
 // formatCost lives in lib/utils.ts: this module imports Prisma, and a client

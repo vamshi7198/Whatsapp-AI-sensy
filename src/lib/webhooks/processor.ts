@@ -701,8 +701,20 @@ async function applyStatusUpdate(
     return;
   }
 
-  await prisma.message.update({
-    where: { id: message.id },
+  // The rank check above is a read; this is the one that holds.
+  //
+  // Delivered and read for one message arrive milliseconds apart as two
+  // separate POSTs — 1 ms apart in this project's own live data — so both can
+  // pass the check above and then write in either order, leaving READ
+  // overwritten by DELIVERED. Naming the ranks this transition is allowed to
+  // come FROM makes the write itself the guard, so a late DELIVERED lands on
+  // nothing.
+  const lowerRanks = (Object.keys(STATUS_RANK) as MessageStatus[]).filter(
+    (status) => STATUS_RANK[status] < STATUS_RANK[next],
+  );
+
+  const advanced = await prisma.message.updateMany({
+    where: { id: message.id, status: { in: lowerRanks } },
     data: {
       status: next,
       ...(next === "SENT" ? { sentAt: event.timestamp } : {}),
@@ -722,6 +734,14 @@ async function applyStatusUpdate(
       ...(event.billable !== undefined ? { billable: event.billable } : {}),
     },
   });
+
+  if (advanced.count === 0) {
+    log.debug(
+      { wamid: event.externalMessageId, to: next },
+      "Another status update moved this message first",
+    );
+    return;
+  }
 
   // A permanent recipient failure is real evidence the number is unusable.
   if (next === "FAILED" && event.error?.code === "131026") {
