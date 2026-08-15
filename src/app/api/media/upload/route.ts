@@ -30,11 +30,56 @@ const ALLOWED: Record<string, { ext: string; kind: string }> = {
   "application/pdf": { ext: "pdf", kind: "document" },
 };
 
+/**
+ * Does the file's own content match what it claims to be?
+ *
+ * Only the first few bytes, which is all that is needed to tell a real JPEG
+ * from a text file someone renamed. Not a security control — the extension is
+ * chosen from our own allowlist, so nothing here can be served as executable —
+ * but a practical one: Meta rejects a mislabelled file at send time, and a
+ * campaign discovers that once per recipient.
+ */
+function looksLike(bytes: Buffer, declaredType: string): boolean {
+  const starts = (...sig: number[]) =>
+    sig.every((byte, i) => bytes[i] === byte);
+
+  switch (declaredType) {
+    case "image/jpeg":
+      return starts(0xff, 0xd8, 0xff);
+    case "image/png":
+      return starts(0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a);
+    case "application/pdf":
+      return starts(0x25, 0x50, 0x44, 0x46); // %PDF
+    case "video/mp4":
+      // The size box comes first, so the marker sits at offset 4.
+      return bytes.subarray(4, 8).toString("ascii") === "ftyp";
+    default:
+      return false;
+  }
+}
+
 export async function POST(request: Request) {
   const user = await getCurrentUser();
 
   if (!can(user, "campaign:create")) {
     return new NextResponse("Not found", { status: 404 });
+  }
+
+  // Checked BEFORE parsing. request.formData() buffers the whole body into
+  // memory, so testing file.size afterwards means a 500 MB upload is already
+  // resident before it is rejected — on a laptop that is also running
+  // PostgreSQL. Next.js applies its body limit to server actions, not to route
+  // handlers, so nothing else stops it.
+  //
+  // Content-Length can be absent or lied about, hence the second check on the
+  // real size further down. This one exists to refuse the obvious cases cheaply.
+  const declared = Number(request.headers.get("content-length") ?? 0);
+
+  if (declared > MAX_BYTES * 1.1) {
+    return NextResponse.json(
+      { error: "That file is larger than 5 MB." },
+      { status: 413 },
+    );
   }
 
   const formData = await request.formData();
@@ -63,6 +108,22 @@ export async function POST(request: Request) {
   }
 
   const bytes = Buffer.from(await file.arrayBuffer());
+
+  // The browser's declared type is just a label, and a mislabelled file is
+  // accepted here and then rejected by Meta at SEND time — once per recipient,
+  // after the campaign has started. Far better to catch it now, while someone
+  // is looking at the screen.
+  if (!looksLike(bytes, file.type)) {
+    return NextResponse.json(
+      {
+        error:
+          "That file is not really a " +
+          allowed.ext.toUpperCase() +
+          ". Re-save it in the right format and try again.",
+      },
+      { status: 400 },
+    );
+  }
 
   // Content-hashed name: re-uploading the same image reuses the same URL
   // rather than filling the disk with duplicates.
