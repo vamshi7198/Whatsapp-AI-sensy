@@ -427,7 +427,7 @@ export async function advanceSession(input: {
     }
 
     const next = await nextStepId(step.id, null);
-    return finishAdvance(session.id, next);
+    return finishAdvance(session, next);
   }
 
   /* --- An option: follow that option's arrow ----------------------------- */
@@ -440,6 +440,26 @@ export async function advanceSession(input: {
       "Free text where an option was expected — waiting",
     );
     return { moved: false, reason: "expected_an_option" };
+  }
+
+  // Is this even one of the options they were offered here?
+  //
+  // A second tap is the ordinary case. The first one moves the session on, and
+  // the second arrives carrying an option id belonging to the step they were
+  // looking at rather than the one they are now on — so the lookup below finds
+  // no arrow and the old code read that as a dead end and ended the session
+  // FAILED. Tapping a button twice killed the conversation, and before the
+  // partial index went in it barred that contact from the journey for good.
+  //
+  // Treated like the free-text case instead: leave them where they are.
+  const offered = optionsForStep(step.type, step.config);
+
+  if (!offered.some((option) => option.id === input.optionId)) {
+    log.info(
+      { sessionId: session.id, stepId: step.id, optionId: input.optionId },
+      "Option is not one this step offered — most likely a second tap, ignoring",
+    );
+    return { moved: false, reason: "stale_option" };
   }
 
   const next = await nextStepId(step.id, input.optionId);
@@ -456,24 +476,56 @@ export async function advanceSession(input: {
     return { moved: false, reason: "dead_end" };
   }
 
-  return finishAdvance(session.id, next);
+  return finishAdvance(session, next);
 }
 
+/**
+ * Moves the session to the next step, but only if nothing else already has.
+ *
+ * The session is the unit of exclusion. Two taps dispatched by Meta as separate
+ * POSTs are processed concurrently — the webhook route hands work to `after()`,
+ * so they overlap inside one process — and both used to read ACTIVE, both
+ * write, and both call runFrom. The customer received the same message twice
+ * from the brand's number, the branch they actually chose was overwritten by
+ * the other, and every send in that branch went out twice.
+ *
+ * The check on `status` at the top of runFrom is not enough: it is a read, and
+ * two readers both see ACTIVE. This makes the transition itself the claim —
+ * `updateMany` filtered on the state we read means exactly one of the two racing
+ * writers matches a row, and the loser is told it moved nothing.
+ *
+ * An in-process lock would not do either: the scheduler is a separate process
+ * and also drives this.
+ */
 async function finishAdvance(
-  sessionId: string,
+  session: { id: string; currentStepId: string | null; status: JourneySessionStatus },
   nextId: string | null,
 ): Promise<AdvanceResult> {
   if (!nextId) {
-    await endSession(sessionId, "COMPLETED", "Reached the end.");
+    await endSession(session.id, "COMPLETED", "Reached the end.");
     return { moved: true, reason: "completed" };
   }
 
-  await prisma.journeySession.update({
-    where: { id: sessionId },
+  const claimed = await prisma.journeySession.updateMany({
+    where: {
+      id: session.id,
+      // The state this advance was decided from. If either has changed, another
+      // tap got here first and already resolved this step.
+      currentStepId: session.currentStepId,
+      status: session.status,
+    },
     data: { currentStepId: nextId, status: "ACTIVE" },
   });
 
-  await runFrom(sessionId);
+  if (claimed.count === 0) {
+    log.info(
+      { sessionId: session.id, stepId: session.currentStepId },
+      "Another reply advanced this session first — not running the step again",
+    );
+    return { moved: false, reason: "already_advanced" };
+  }
+
+  await runFrom(session.id);
   return { moved: true };
 }
 
