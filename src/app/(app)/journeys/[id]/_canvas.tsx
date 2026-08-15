@@ -17,7 +17,14 @@ import {
   type NodeProps,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
-import { useCallback, useMemo, useRef, useState, useTransition } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  useTransition,
+} from "react";
 
 import { Button } from "@/components/ui/button";
 import { Input, Select } from "@/components/ui/field";
@@ -204,6 +211,63 @@ function Canvas(props: CanvasProps) {
     })),
   );
 
+  /*
+    Unsaved work.
+
+    Everything on this canvas — node positions, new steps, every settings-panel
+    edit, every connection — lives only in React state until Save is pressed,
+    and nothing warned before it went. The "← All journeys" link sits directly
+    above the canvas, so losing twenty minutes of work took one misplaced click.
+  */
+  const [dirty, setDirty] = useState(false);
+
+  useEffect(() => {
+    if (!dirty) return;
+
+    // Browsers ignore custom text here and show their own wording; setting
+    // returnValue is what actually triggers the prompt.
+    const warn = (event: BeforeUnloadEvent) => {
+      event.preventDefault();
+      event.returnValue = "";
+    };
+
+    window.addEventListener("beforeunload", warn);
+    return () => window.removeEventListener("beforeunload", warn);
+  }, [dirty]);
+
+  /**
+   * Wraps React Flow's change handlers so an edit marks the canvas dirty.
+   *
+   * Selecting a node or measuring it is not an edit; dragging, adding and
+   * removing are. Without the distinction, merely clicking a step would raise
+   * an unsaved-changes warning and the warning would stop meaning anything.
+   */
+  const handleNodesChange = useCallback(
+    (changes: Parameters<typeof onNodesChange>[0]) => {
+      if (
+        changes.some(
+          (change) =>
+            change.type === "position" ||
+            change.type === "remove" ||
+            change.type === "add",
+        )
+      ) {
+        setDirty(true);
+      }
+
+      onNodesChange(changes);
+    },
+    [onNodesChange],
+  );
+
+  const handleEdgesChange = useCallback(
+    (changes: Parameters<typeof onEdgesChange>[0]) => {
+      if (changes.some((change) => change.type !== "select")) setDirty(true);
+      onEdgesChange(changes);
+    },
+    [onEdgesChange],
+  );
+
   // Problems are merged in rather than stored, so revalidating does not lose
   // whatever the operator has dragged since.
   const shownNodes = useMemo(
@@ -235,6 +299,7 @@ function Canvas(props: CanvasProps) {
   );
 
   function addStep(type: StepKind) {
+    setDirty(true);
     const meta = STEP_LIBRARY[type];
 
     // A counter rather than a clock: these ids only need to be unique within
@@ -263,6 +328,9 @@ function Canvas(props: CanvasProps) {
   }
 
   function updateStep(id: string, patch: Partial<StepModel>) {
+    // Every settings-panel edit comes through here, and none of it is on the
+    // server until Save.
+    setDirty(true);
     setNodes((current) =>
       current.map((node) =>
         node.id === id
@@ -273,6 +341,7 @@ function Canvas(props: CanvasProps) {
   }
 
   function deleteStep(id: string) {
+    setDirty(true);
     setNodes((current) => current.filter((n) => n.id !== id));
     setEdges((current) => current.filter((e) => e.source !== id && e.target !== id));
     setSelectedId(null);
@@ -313,6 +382,11 @@ function Canvas(props: CanvasProps) {
       setState({ error: result.error, success: result.success });
       if (result.idMap) adoptIds(result.idMap);
       if (result.validation) setValidation(result.validation);
+
+      // Only on success. A failed save leaves the work still unsaved, and
+      // clearing the flag there would drop the warning at the exact moment it
+      // is most needed.
+      if (!result.error) setDirty(false);
     });
   }
 
@@ -417,7 +491,23 @@ function Canvas(props: CanvasProps) {
             Test on this number
           </Button>
 
-          <Button variant="secondary" size="sm" onClick={save} disabled={isPending}>
+          {/*
+            Said out loud, next to the button that fixes it. The browser's own
+            warning only appears once someone is already leaving; this is what
+            they can see while they still are not.
+          */}
+          {dirty && !isPending && (
+            <span className="self-center text-xs font-medium text-amber-600 dark:text-amber-400">
+              Unsaved changes
+            </span>
+          )}
+
+          <Button
+            variant={dirty ? "primary" : "secondary"}
+            size="sm"
+            onClick={save}
+            disabled={isPending}
+          >
             {isPending ? "Saving…" : "Save"}
           </Button>
           <Button size="sm" onClick={publish} disabled={isPending}>
@@ -467,8 +557,8 @@ function Canvas(props: CanvasProps) {
           <ReactFlow
             nodes={shownNodes}
             edges={edges}
-            onNodesChange={onNodesChange}
-            onEdgesChange={onEdgesChange}
+            onNodesChange={handleNodesChange}
+            onEdgesChange={handleEdgesChange}
             onConnect={onConnect}
             onNodeClick={(_, node) => setSelectedId(node.id)}
             onPaneClick={() => setSelectedId(null)}
