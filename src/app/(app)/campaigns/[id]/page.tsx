@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto";
+
 import Link from "next/link";
 import { notFound } from "next/navigation";
 
@@ -261,7 +263,13 @@ export default async function CampaignReportPage({
       )}
 
       {retryPreview && can(user, "campaign:send") && (
-        <RetryPanel campaignId={id} preview={retryPreview} />
+        <RetryPanel
+          campaignId={id}
+          preview={retryPreview}
+          // Minted per render, so both halves of a double-click send the same
+          // key and resolve to one resend.
+          idempotencyKey={`retry_${randomUUID()}`}
+        />
       )}
 
       {campaign.retryOfCampaignId && (

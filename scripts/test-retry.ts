@@ -224,9 +224,20 @@ async function main() {
 
   console.log("\nClicking twice\n");
 
+  // One key for both, which is what the page does: it mints the key once when
+  // it renders, so every click on that button carries the same one.
+  //
+  // Passing no key here used to pass by luck. The fallback derives the key
+  // from a count of resends already made, and that count is of the very rows a
+  // resend creates — so if the first click commits before the second counts,
+  // the second computes a different key and creates a second campaign,
+  // messaging every failed contact twice. Whether it passed depended on which
+  // of the two got to the count first.
+  const doubleClickKey = `retry_test_${Date.now()}`;
+
   const [a, b] = await Promise.all([
-    createRetryCampaign(campaign.id, admin.id),
-    createRetryCampaign(campaign.id, admin.id),
+    createRetryCampaign(campaign.id, admin.id, doubleClickKey),
+    createRetryCampaign(campaign.id, admin.id, doubleClickKey),
   ]);
 
   check(

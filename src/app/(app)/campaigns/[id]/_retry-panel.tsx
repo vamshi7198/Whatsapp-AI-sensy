@@ -21,9 +21,15 @@ import { retryFailedAction, type RetryState } from "../actions";
 export function RetryPanel({
   campaignId,
   preview,
+  idempotencyKey,
 }: {
   campaignId: string;
   preview: RetryPreview;
+  /**
+   * Minted when the page rendered, so a double-click on Resend carries one key
+   * and produces one campaign rather than messaging the failures twice.
+   */
+  idempotencyKey: string;
 }) {
   const router = useRouter();
   const [confirming, setConfirming] = useState(false);
@@ -132,6 +138,7 @@ export function RetryPanel({
             onClick={() => {
               const formData = new FormData();
               formData.set("id", campaignId);
+              formData.set("idempotencyKey", idempotencyKey);
               startTransition(async () => {
                 setState(await retryFailedAction({}, formData));
                 setConfirming(false);

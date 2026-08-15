@@ -383,6 +383,12 @@ export async function getRetryPreview(campaignId: string): Promise<RetryPreview>
 export async function createRetryCampaign(
   campaignId: string,
   createdById: string,
+  /**
+   * Idempotency key from the page that offered the button, so a double-click
+   * resolves to one campaign. Omit it and the attempt-number fallback applies,
+   * which cannot survive genuine concurrency — see below.
+   */
+  callerKey?: string,
 ): Promise<CreateCampaignResult> {
   const parent = await prisma.campaign.findUnique({
     where: { id: campaignId },
@@ -462,9 +468,16 @@ export async function createRetryCampaign(
     where: { retryOfCampaignId: campaignId },
   })) + 1;
 
-  // Two operators clicking at the same moment compute the same key, so the
-  // second one resolves to the first campaign instead of sending twice.
-  const idempotencyKey = `retry:${campaignId}:${attempt}`;
+  // A key minted when the page rendered, when the caller has one.
+  //
+  // The fallback below cannot make concurrent clicks collide, and the comment
+  // that used to sit here claimed otherwise: the attempt number is counted
+  // from the very rows a resend creates, so if the first click commits before
+  // the second counts, the second computes attempt + 1, gets a different key,
+  // and creates a second campaign. The failed contacts are then messaged
+  // twice. Two clicks from one page now carry one key and collide by
+  // construction, which is the same thing the campaign wizard does.
+  const idempotencyKey = callerKey ?? `retry:${campaignId}:${attempt}`;
 
   const existing = await prisma.campaign.findUnique({
     where: { idempotencyKey },

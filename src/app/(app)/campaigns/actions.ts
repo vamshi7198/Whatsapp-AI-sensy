@@ -492,7 +492,12 @@ export async function retryFailedAction(
     const user = await requireApiAuth("campaign:send");
     const id = String(formData.get("id") ?? "");
 
-    const result = await createRetryCampaign(id, user.id);
+    // Minted when the page rendered, so a double-click carries one key and
+    // resolves to a single resend rather than messaging the failed contacts
+    // twice.
+    const key = String(formData.get("idempotencyKey") ?? "") || undefined;
+
+    const result = await createRetryCampaign(id, user.id, key);
 
     if (!result.ok || !result.campaignId) {
       return { error: result.error ?? "Could not start the resend." };

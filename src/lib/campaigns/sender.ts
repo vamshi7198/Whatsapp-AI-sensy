@@ -111,7 +111,7 @@ export async function sendCampaignBatch(
     }
   }
 
-  const recipients = await prisma.campaignRecipient.findMany({
+  const candidates = await prisma.campaignRecipient.findMany({
     where: {
       campaignId,
       status: "PENDING",
@@ -121,6 +121,29 @@ export async function sendCampaignBatch(
     },
     orderBy: { createdAt: "asc" },
     take: batchSize,
+    select: { id: true },
+  });
+
+  if (candidates.length === 0) return result;
+
+  // Claim before sending. RecipientStatus.QUEUED has existed in the enum since
+  // the beginning and was never assigned to anything — the claim it was
+  // designed for was never written.
+  //
+  // Without it, a crash or a task-kill between Meta accepting the message and
+  // recordAccepted committing left the row PENDING, and resumeStalledCampaigns
+  // sent it again ten minutes later. The customer got two messages while our
+  // records showed one. QUEUED marks the window where we do not yet know, so
+  // the recovery sweep can treat it as unknown rather than as untried.
+  await prisma.campaignRecipient.updateMany({
+    where: { id: { in: candidates.map((c) => c.id) }, status: "PENDING" },
+    data: { status: "QUEUED" },
+  });
+
+  // Only what the claim actually won: another pass may have taken some.
+  const recipients = await prisma.campaignRecipient.findMany({
+    where: { id: { in: candidates.map((c) => c.id) }, status: "QUEUED" },
+    orderBy: { createdAt: "asc" },
   });
 
   if (recipients.length === 0) return result;
@@ -152,6 +175,7 @@ export async function sendCampaignBatch(
         { campaignId, remaining: recipients.length - result.attempted },
         "Campaign cancelled mid-batch — stopping",
       );
+      await releaseUnsent(recipients.slice(result.attempted).map((r) => r.id));
       break;
     }
 
@@ -246,6 +270,25 @@ export async function sendCampaignBatch(
       // A dead token will fail every remaining message identically. Pausing
       // the campaign is better than burning through the queue.
       if (error.isAuthError) {
+        // Hand the attempt back before pausing.
+        //
+        // attemptCount is incremented before the send, and this branch used to
+        // return without recording any outcome — so the recipient kept a
+        // consumed attempt while staying PENDING. A dead token burning through
+        // five passes made someone permanently unsendable: every filter here,
+        // in resumeStalledCampaigns and in the retry preview excludes
+        // attemptCount >= MAX_ATTEMPTS, and recovering needed a hand-edit to
+        // the database. A dead token is not the recipient's fault and must not
+        // cost them their attempts.
+        await prisma.campaignRecipient.update({
+          where: { id: recipient.id },
+          data: {
+            status: "PENDING",
+            attemptCount: { decrement: 1 },
+            nextAttemptAt: null,
+          },
+        });
+
         await prisma.campaign.update({
           where: { id: campaignId },
           data: { status: "PARTIALLY_FAILED" },
@@ -254,6 +297,7 @@ export async function sendCampaignBatch(
         result.paused = true;
         result.pauseReason = error.userMessage;
         log.error({ campaignId, code: error.code }, "Campaign paused: auth error");
+        await releaseUnsent(recipients.slice(result.attempted).map((r) => r.id));
         return result;
       }
 
@@ -271,6 +315,10 @@ export async function sendCampaignBatch(
         await prisma.campaignRecipient.update({
           where: { id: recipient.id },
           data: {
+            // Back to PENDING: the claim is finished with, and a row left
+            // QUEUED would be read by the recovery sweep as a send that may
+            // have gone out.
+            status: "PENDING",
             nextAttemptAt: new Date(
               Date.now() + backoffMs(recipient.attemptCount + 1),
             ),
@@ -373,8 +421,54 @@ async function recordFailure(
   ]);
 }
 
+/**
+ * Hands claimed recipients back when a batch stops before reaching them.
+ *
+ * A QUEUED row means "we may have sent this", and the recovery sweep treats it
+ * that way — as unconfirmed rather than untried. That is right for a row the
+ * process died on, and wrong for one the loop simply never got to because the
+ * campaign was cancelled or the token expired. Those were never attempted, so
+ * they go back to PENDING and stay eligible.
+ */
+async function releaseUnsent(recipientIds: string[]): Promise<void> {
+  if (recipientIds.length === 0) return;
+
+  await prisma.campaignRecipient.updateMany({
+    where: { id: { in: recipientIds }, status: "QUEUED" },
+    data: { status: "PENDING" },
+  });
+}
+
 /** Marks a campaign complete once nothing is left pending. */
 async function finaliseIfComplete(campaignId: string): Promise<void> {
+  // Anyone who has used up every attempt is written to FAILED first.
+  //
+  // They were left PENDING with attemptCount at the maximum, which every
+  // filter here and in the retry preview excludes — so they were invisible,
+  // unsendable, and counted below as still pending, meaning the campaign never
+  // reached a terminal state at all. Recorded as failures they show on the
+  // report, appear in the resend preview, and let the campaign finish.
+  const exhausted = await prisma.campaignRecipient.updateMany({
+    where: {
+      campaignId,
+      status: "PENDING",
+      attemptCount: { gte: MAX_ATTEMPTS },
+    },
+    data: { status: "FAILED" },
+  });
+
+  if (exhausted.count > 0) {
+    await prisma.campaign.update({
+      where: { id: campaignId },
+      data: { failedCount: { increment: exhausted.count } },
+    });
+
+    log.warn(
+      { campaignId, count: exhausted.count },
+      "Recipients had used every attempt without an outcome — recorded as failed",
+    );
+  }
+
   const pending = await prisma.campaignRecipient.count({
     where: { campaignId, status: { in: ["PENDING", "QUEUED"] } },
   });
@@ -529,6 +623,26 @@ export async function resumeStalledCampaigns(
   });
 
   const resumed: ResumeResult[] = [];
+
+  // Rows a crash left mid-send.
+  //
+  // QUEUED means the claim was taken and no outcome was ever recorded, so
+  // whether Meta accepted the message is unknowable — exactly the state the
+  // "unknown" send outcome already describes. Treated the same way: recorded
+  // as sent-but-unconfirmed, never re-sent, and visible to a human. Sending
+  // again would be the one mistake worth avoiding here, because a duplicate
+  // cannot be taken back.
+  const abandoned = await prisma.campaignRecipient.updateMany({
+    where: { status: "QUEUED", updatedAt: { lt: cutoff } },
+    data: { status: "SENT", needsReconciliation: true },
+  });
+
+  if (abandoned.count > 0) {
+    log.warn(
+      { count: abandoned.count },
+      "Recipients were left mid-send by a restart — marked unconfirmed rather than sent again",
+    );
+  }
 
   for (const campaign of candidates) {
     // Re-read the recipients rather than trusting the campaign row: the count

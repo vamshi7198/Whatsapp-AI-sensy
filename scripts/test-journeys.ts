@@ -228,10 +228,34 @@ async function main() {
 
   check("and sends nothing at all", sentAnything === 0, `${sentAnything} sent`);
 
-  check(
-    "entering twice is refused",
-    !(await startJourney({ journeyId: journey.id, contactId: p1.id })).ok,
-  );
+  /*
+    p1's session ended FAILED just above, so entering again is now allowed.
+
+    This check used to assert the opposite, because the unique index carried no
+    status predicate — it meant "once ever" while its comment said "once at a
+    time". Journeys were single-use per contact for good: re-running one next
+    quarter reached nobody who took part the first time, and any session that
+    ended FAILED after a transient Meta error barred that person permanently.
+    Refusing re-entry was the bug, not the guarantee.
+  */
+  const reEnter = await startJourney({
+    journeyId: journey.id,
+    contactId: p1.id,
+  });
+
+  check("entering again after a session ended is allowed", reEnter.ok);
+
+  // The other half — that a contact cannot be in the same journey twice AT
+  // ONCE — cannot be shown here, because this journey's first step fails
+  // immediately on the closed service window, so the session just created is
+  // already terminal. scripts/test-journey-reentry.ts holds a session open and
+  // checks it there.
+
+  // Left tidy for the checks that follow.
+  await prisma.journeySession.updateMany({
+    where: { contactId: p1.id, status: { notIn: ["COMPLETED", "FAILED", "CANCELLED"] } },
+    data: { status: "CANCELLED", currentStepId: null },
+  });
 
   /* ------------------------------------------------------------------ */
   /* Branching                                                           */
@@ -366,9 +390,28 @@ async function main() {
 
   const s7 = await sessionOf(p7.id);
 
+  /*
+    An option id this step never offered leaves the customer where they are.
+
+    This check used to expect the session to END here, and the id it sends —
+    "a_button_that_does_not_exist" — is not a button with a missing arrow, it
+    is an id belonging to no option at all. That is what a second tap looks
+    like: the first tap moves the session on, and the second arrives carrying
+    an id from the step the customer had been looking at rather than the one
+    they are now on.
+
+    Ending the session for that meant tapping a WhatsApp button twice killed
+    the conversation — and until the index gained a status predicate, barred
+    that contact from the journey for good. A genuine dead end, an option this
+    step DOES offer with no arrow behind it, still ends the session; validation
+    refuses to publish one, so it only happens on a journey published before
+    that check existed.
+  */
   check(
-    "an option with no arrow ends the session rather than hanging",
-    !unknown.moved && s7?.status === "FAILED",
+    "an option this step never offered is ignored, not fatal",
+    !unknown.moved &&
+      unknown.reason === "stale_option" &&
+      s7?.status === "WAITING_FOR_REPLY",
     `${unknown.reason}, status ${s7?.status}`,
   );
 
