@@ -126,17 +126,34 @@ credentials therefore needs no redeploy.
 ## Tests
 
 ```bash
-npm run verify     # 163 unit tests, plus lint and typecheck
+npm run verify     # 249 unit tests, plus lint and typecheck
 ```
 
 Integration scripts in `scripts/` run against a real database and clean up
 after themselves — covering webhook idempotency, out-of-order delivery
-statuses, the compliance gate, duplicate-send protection, and secret
-encryption.
+statuses, the compliance gate, duplicate-send protection, journey re-entry and
+concurrency, and secret encryption.
+
+[docs/TESTING.md](docs/TESTING.md) explains which tests exist because the
+obvious implementation was wrong, and what is not covered.
+
+---
+
+## Running it in production
+
+| | |
+|---|---|
+| [deploy/README.md](deploy/README.md) | Setting the machine up from scratch |
+| [docs/OPERATIONS.md](docs/OPERATIONS.md) | The scheduled tasks, the health endpoint, the weekly routine |
+| [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) | Symptom → cause → fix |
+| [docs/BACKUP_AND_RECOVERY.md](docs/BACKUP_AND_RECOVERY.md) | Where backups go, how to check one, how to restore |
+| [docs/SECURITY.md](docs/SECURITY.md) | What is protected and what is deliberately not |
 
 ---
 
 ## Not built
 
-Deliberately out of scope for now: WhatsApp Flows, automations, scheduled
-campaigns, multi-tenancy, catalog and payment messages.
+Deliberately out of scope: multi-tenancy, catalog and payment messages.
+
+Built since this list was first written, and no longer excluded: WhatsApp
+Flows, automations, scheduled campaigns, and the visual journey builder.
